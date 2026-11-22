@@ -1,4 +1,5 @@
-// セーブ：IndexedDB（使えない環境では localStorage、どちらも不可ならメモリのみ）
+// セーブ：IndexedDB（DB名 minase-drive / キー slot1）。localStorage にも同じ内容を控えとして保存し、
+// どちらも使えない環境ではメモリのみ（その場合は「保存できない」と表示する）
 const DB = 'minase-drive', STORE = 'save', KEY = 'slot1';
 let mem = null;
 function open() {
@@ -6,26 +7,32 @@ function open() {
     try {
       const r = indexedDB.open(DB, 1);
       r.onupgradeneeded = () => r.result.createObjectStore(STORE);
-      r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+      r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); r.onblocked = () => rej(new Error('blocked'));
     } catch (e) { rej(e); }
   });
 }
+async function tx(mode, fn) {
+  const db = await open();
+  try {
+    return await new Promise((res, rej) => { const t = db.transaction(STORE, mode), st = t.objectStore(STORE), r = fn(st); let out; if (r) r.onsuccess = () => { out = r.result; }; t.oncomplete = () => res(out); t.onerror = () => rej(t.error); t.onabort = () => rej(t.error); });
+  } finally { db.close(); } // 接続を閉じる（別タブでの更新を妨げない）
+}
 export async function saveGame(data) {
   mem = data;
-  try {
-    const db = await open();
-    await new Promise((res, rej) => { const t = db.transaction(STORE, 'readwrite'); t.objectStore(STORE).put(data, KEY); t.oncomplete = res; t.onerror = () => rej(t.error); });
-    return 'IndexedDB';
-  } catch (e) {
-    try { localStorage.setItem(DB, JSON.stringify(data)); return 'localStorage'; } catch (e2) { return 'memory'; }
-  }
+  let ls = false;
+  try { localStorage.setItem(DB, JSON.stringify(data)); ls = true; } catch (e) { /* 容量不足・プライベートモード */ }
+  try { await tx('readwrite', st => st.put(data, KEY)); return 'IndexedDB'; } catch (e) { return ls ? 'localStorage' : 'memory'; }
 }
 export async function loadGame() {
-  try {
-    const db = await open();
-    const v = await new Promise((res, rej) => { const t = db.transaction(STORE, 'readonly'); const r = t.objectStore(STORE).get(KEY); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
-    if (v) return v;
-  } catch (e) { /* fallthrough */ }
-  try { const s = localStorage.getItem(DB); if (s) return JSON.parse(s); } catch (e) { /* none */ }
-  return mem;
+  let a = null, b = null;
+  try { a = await tx('readonly', st => st.get(KEY)); } catch (e) { /* fallthrough */ }
+  try { const s = localStorage.getItem(DB); if (s) b = JSON.parse(s); } catch (e) { /* none */ }
+  // 新しい方を使う（IndexedDB の書き込みが途中で失敗した場合の保険）
+  const v = a && b ? ((b.at || 0) > (a.at || 0) ? b : a) : a || b || mem;
+  return v && typeof v === 'object' ? v : null;
+}
+export async function clearSave() {
+  mem = null;
+  try { localStorage.removeItem(DB); } catch (e) { /* none */ }
+  try { await tx('readwrite', st => st.delete(KEY)); } catch (e) { /* none */ }
 }

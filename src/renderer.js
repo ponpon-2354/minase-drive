@@ -15,32 +15,35 @@ in vec3 vW, vN, vC; in vec2 vUV; flat in float vMat; flat in float vLay;
 uniform sampler2DArray uTex;
 uniform vec3 uSun, uSunC, uAmb, uFog, uCam, uTint, uHP, uHD, uSig;
 uniform float uFogN, uFogF, uNight, uWet, uHOn, uAlpha;
-uniform vec4 uCarL;
+uniform vec4 uCarL, uPlate; uniform vec2 uLit; uniform float uRev, uUrban, uTime;
 out vec4 o;
 void main(){
   int m=int(vMat+.5);
-  vec4 t=texture(uTex, vec3(vUV, vLay));
+  vec4 t = m==19 && uPlate.z>=0. ? texture(uTex, vec3(vUV*vec2(.5,.25)+uPlate.xy, uPlate.z)) : m==21 ? texture(uTex, vec3(vUV+vec2(0.,uTime*.03), vLay)) : texture(uTex, vec3(vUV, vLay));
   if(m==17 && t.a<.5) discard;
+  if(m==22 && uWet<.3) discard;
+  if(m==24){ o=vec4(vC*t.rgb,uAlpha); return; }
+  if(m==25){ o=vec4(vC*t.rgb*clamp(uAmb*1.3+uSunC*.75,0.,1.2),t.a*uAlpha); return; }
   vec3 base=vC*t.rgb; if(m==1) base*=uTint;
   float dist=length(vW-uCam);
   if(m==6){ o=vec4(mix(uFog,uTint,clamp(vC.r,0.,1.)),1.); return; }
   if(m==5){ vec3 c=base; float f=clamp((dist-uFogN)/(uFogF-uFogN),0.,1.); o=vec4(mix(c,uFog,f*.7),uAlpha); return; }
   vec3 n=normalize(vN); if(!gl_FrontFacing) n=-n;
   float d=max(dot(n,uSun),0.);
-  vec3 lit=base*(uAmb+uSunC*d);
+  vec3 lit=base*(uAmb+uSunC*d+vec3(.16,.14,.11)*uNight*uUrban);
   if(uHOn>0.){
     vec3 L=vW-uHP; float ds=length(L); vec3 Ld=L/max(ds,.001);
-    float sp=smoothstep(.80,.94,dot(Ld,uHD))*clamp(1.-ds/75.,0.,1.);
+    float sp=smoothstep(.66,.88,dot(Ld,uHD))*clamp(1.-ds/100.,0.,1.)*(.55+.45*smoothstep(.85,.96,dot(Ld,uHD)));
     lit+=base*sp*(max(dot(n,-Ld),0.)*.7+.3)*2.4*uHOn;
   }
-  if(m==7){
+  if(m==7||m==22){
     vec3 V=normalize(uCam-vW); vec3 R=reflect(-uSun,n);
     float s=pow(max(dot(R,V),0.),20.)*uWet; float fr=pow(1.-clamp(V.y,0.,1.),5.)*uWet;
-    lit*=1.-uWet*.3; lit=mix(lit,uFog*.85,fr*.6); lit+=uSunC*s*.5;
+    float wk = m==22 ? min(1.,uWet*1.4) : 1.; lit*=1.-uWet*.3*wk; lit=mix(lit,uFog*.85,fr*.6*wk + (m==22 ? .35*uWet : 0.)); lit+=uSunC*s*.5*wk;
   }
   vec3 e=vec3(0.);
   if(m==2) e=vC*uCarL.x*1.3;
-  else if(m==3) e=vec3(1.,.83,.56)*t.a*uNight*1.05;
+  else if(m==3){ float a=textureLod(uTex, vec3(vUV, vLay), 0.).a; float on = a<.003 ? 0. : (a<.5 ? step(uLit.x, a*2.) : step(uLit.y, (a-.5)*2.)); vec3 wc = fract(a*37.)<.14 ? vec3(.62,.75,1.) : fract(a*53.)<.3 ? vec3(1.,.93,.8) : vec3(1.,.82,.55); e=wc*on*uNight*.8; }
   else if(m==4) e=vC*(uCarL.x*.5+uCarL.y*1.3);
   else if(m==8) e=vC*uNight*1.6;
   else if(m==10) e=vC*uCarL.z*1.6;
@@ -50,9 +53,11 @@ void main(){
   else if(m==14){ lit*=.12; e=vC*uSig.z*1.5; }
   else if(m==16) e=t.rgb*vC*uNight*.85;
   else if(m==18) e=vC*1.3;
+  else if(m==20) e=vC*uRev*1.4;
   vec3 c=lit+e;
   float f=clamp((dist-uFogN)/(uFogF-uFogN),0.,1.);
   if(m==9) f=.45+uWet*.3;
+  if(m==23){ f=.3+.55*clamp((dist-uFogF*.7)/2500.,0.,1.); c+=vec3(1.,.85,.6)*uNight*uUrban*.18*step(.5,fract(vW.y*.33)); }
   o=vec4(mix(c,uFog,f),uAlpha);
 }`;
 
@@ -67,9 +72,9 @@ export class Renderer {
     if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
     this.p = p; gl.useProgram(p);
     this.u = {};
-    for (const n of ['uVP', 'uM', 'uTex', 'uSun', 'uSunC', 'uAmb', 'uFog', 'uCam', 'uTint', 'uHP', 'uHD', 'uSig', 'uFogN', 'uFogF', 'uNight', 'uWet', 'uHOn', 'uAlpha', 'uCarL']) this.u[n] = gl.getUniformLocation(p, n);
+    for (const n of ['uVP', 'uM', 'uTex', 'uSun', 'uSunC', 'uAmb', 'uFog', 'uCam', 'uTint', 'uHP', 'uHD', 'uSig', 'uFogN', 'uFogF', 'uNight', 'uWet', 'uHOn', 'uAlpha', 'uCarL', 'uPlate', 'uLit', 'uRev', 'uUrban', 'uTime']) this.u[n] = gl.getUniformLocation(p, n);
     // テクスチャ配列
-    const tex = gl.createTexture(); gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D_ARRAY, tex);
+    const tex = this.tex = gl.createTexture(); gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D_ARRAY, tex);
     gl.texImage3D(gl.TEXTURE_2D_ARRAY, 0, gl.RGBA8, TS, TS, LAYER_COUNT, 0, gl.RGBA, gl.UNSIGNED_BYTE, buildLayers());
     gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
     gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
@@ -80,7 +85,7 @@ export class Renderer {
     gl.enable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE);
     this.ident = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
     this.stats = { draws: 0, tris: 0, meshes: 0 };
-    this.white = [1, 1, 1]; this.noCar = [0, 0, 0, 0];
+    this.white = [1, 1, 1]; this.noCar = [0, 0, 0, 0]; this.noPlate = [0, 0, -1, 0];
   }
   mesh(data, mode) {
     const gl = this.gl;
@@ -113,15 +118,20 @@ export class Renderer {
     gl.uniform1f(u.uNight, F.night); gl.uniform1f(u.uWet, F.wet);
     gl.uniform1f(u.uHOn, F.hOn); gl.uniform3fv(u.uHP, F.hP); gl.uniform3fv(u.uHD, F.hD);
     gl.uniform1f(u.uAlpha, 1); gl.uniform3fv(u.uSig, [0, 0, 0]);
+    gl.uniform2fv(u.uLit, F.lit || [0.5, 0.5]); gl.uniform1f(u.uUrban, F.urban || 0); gl.uniform1f(u.uTime, F.time || 0); gl.uniform1f(u.uRev, 0); gl.uniform4fv(u.uPlate, [0, 0, -1, 0]);
     this.stats.draws = 0; this.stats.tris = 0;
   }
-  draw(m, model, tint, carL, sig) {
+  setLayer(i, data) { const gl = this.gl; gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.tex); gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, i, TS, TS, 1, gl.RGBA, gl.UNSIGNED_BYTE, data); this.dirty = true; }
+  mips() { if (this.dirty) { const gl = this.gl; gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.tex); gl.generateMipmap(gl.TEXTURE_2D_ARRAY); this.dirty = false; } }
+  draw(m, model, tint, carL, sig, plate, rev) {
     if (!m) return;
     const gl = this.gl, u = this.u;
     gl.uniformMatrix4fv(u.uM, false, model || this.ident);
     gl.uniform3fv(u.uTint, tint || this.white);
     gl.uniform4fv(u.uCarL, carL || this.noCar);
     if (sig) gl.uniform3fv(u.uSig, sig);
+    if (plate || this._pl) { gl.uniform4fv(u.uPlate, plate || this.noPlate); this._pl = !!plate; }
+    if (rev !== undefined || this._rv) { gl.uniform1f(u.uRev, rev || 0); this._rv = !!rev; }
     gl.bindVertexArray(m.vao); gl.drawArrays(m.mode, 0, m.count);
     this.stats.draws++; this.stats.tris += m.count / 3;
   }
@@ -130,7 +140,8 @@ export class Renderer {
     const gl = this.gl;
     if (!mode) { gl.disable(gl.BLEND); gl.depthMask(true); return; }
     gl.enable(gl.BLEND); gl.depthMask(false);
-    if (mode === 'add') gl.blendFunc(gl.SRC_ALPHA, gl.ONE); else gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    // 画面のα値は変えない（キャンバスが透けて黒く見えるのを防ぐ）
+    if (mode === 'add') gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE, gl.ZERO, gl.ONE); else gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ZERO, gl.ONE);
   }
   decal(lv) { const gl = this.gl; if (lv) { gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(-lv, -2 * lv); } else gl.disable(gl.POLYGON_OFFSET_FILL); }
 }

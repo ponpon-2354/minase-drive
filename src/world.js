@@ -1,5 +1,7 @@
 // 都市の拡張部分（フェーズ4）：山間部（みなせ峠・トンネル）、地形、バイパス高架、河川と橋、
 // 郊外住宅地・工業団地・郊外ロードサイド・田園・河川敷、鉄道、路面電車
+import { roadExtras } from './props.js';
+import { farmV4, townExtras, shadowsAndFar, cherry, cemetery, farmCenter } from './extras.js';
 import { GB } from './geo.js';
 import { L } from './textures.js';
 import { rng, clamp } from './math.js';
@@ -15,7 +17,7 @@ export function natH(x, z) {
   const hills = (18 * Math.sin(x / 137 + 1.3) * Math.cos(z / 161) + 10 * Math.sin((x - z) / 71) + 6 * Math.sin(x / 37) * Math.sin(z / 43)) * t;
   const ridge = 105 * Math.exp(-((x / 170) ** 2)) * smooth((-z - 1450) / 180);
   const edge = Math.max(0, Math.abs(x) - 1800) * 0.25 * t;
-  return 175 * t + hills + ridge + edge;
+  return 115 * t + hills + ridge + edge;
 }
 // 山道の制御点（左側：x=-500 から登り、トンネルを抜けて x=500 へ下る）
 const MCP = [[-500, -1000], [-500, -1060], [-540, -1150], [-680, -1230], [-760, -1330], [-640, -1400], [-500, -1420], [-470, -1500], [-560, -1570], [-430, -1650], [-260, -1690], [-170, -1692], [-60, -1692], [60, -1692], [170, -1692], [260, -1682], [420, -1620], [540, -1530], [430, -1450], [560, -1380], [700, -1290], [650, -1180], [540, -1110], [500, -1060], [500, -1000]];
@@ -59,10 +61,21 @@ function pre(city) {
   for (let i = ta; i <= tb; i++) y[i] = y[ta - 1] + (y[tb + 1] - y[ta - 1]) * (cum[i] - cum[ta - 1]) / (cum[tb + 1] - cum[ta - 1]);
   y[0] = 0; y[N - 1] = 0;
   // 勾配を最大9%に
-  for (let it = 0; it < 4; it++) {
-    for (let i = 1; i < N; i++) { const g = (cum[i] - cum[i - 1]) * 0.09; y[i] = clamp(y[i], y[i - 1] - g, y[i - 1] + g); }
-    for (let i = N - 2; i >= 0; i--) { const g = (cum[i + 1] - cum[i]) * 0.09; y[i] = clamp(y[i], y[i + 1] - g, y[i + 1] + g); }
+  // 勾配の上限（入口150mは3%、300mまで5%、それ以外6.5%）。両端を0に固定してから前後に制限をかけ、収束するまで繰り返す
+  const gm = i => (cum[i] < 150 || cum[N - 1] - cum[i] < 150) ? 0.03 : (cum[i] < 300 || cum[N - 1] - cum[i] < 300) ? 0.05 : 0.065;
+  for (let it = 0; it < 12; it++) {
     y[0] = 0; y[N - 1] = 0;
+    for (let i = 1; i < N; i++) { const g = (cum[i] - cum[i - 1]) * gm(i); y[i] = clamp(y[i], y[i - 1] - g, y[i - 1] + g); }
+    y[N - 1] = 0;
+    for (let i = N - 2; i >= 0; i--) { const g = (cum[i + 1] - cum[i]) * gm(i); y[i] = clamp(y[i], y[i + 1] - g, y[i + 1] + g); }
+  }
+  y[0] = 0; y[N - 1] = 0;
+  // 入口の縦断曲線：最初と最後の150mを滑らかな曲線（S字）でつなぐ
+  for (const end of [0, 1]) {
+    const idx = i => end ? N - 1 - i : i, dist = i => end ? cum[N - 1] - cum[idx(i)] : cum[idx(i)];
+    let k = 0; while (k < N - 1 && dist(k) < 150) k++;
+    const yk = y[idx(k)], Lk = dist(k) || 1;
+    for (let i = 0; i < k; i++) { const t = dist(i) / Lk; y[idx(i)] = yk * t * t * (3 - 2 * t); }
   }
   const full = P.map((p, i) => [p[0], p[1], y[i]]);
   const mtn = { full, cum, ta: cum[ta] - 4, tb: cum[tb] + 4, hw };
@@ -109,8 +122,8 @@ function pre(city) {
     const inside = n && n.s > mtn.ta + 1 && n.s < mtn.tb - 1;
     if (inside) { if (n.d < hw + 14) { h = Math.max(h, n.y + 9); tflag[iz * NX + ix] = 1; } }
     else if (n) {
-      const r0 = hw + 5, r1 = r0 + 38;
-      if (n.d < r1) { const k = smooth((n.d - r0) / (r1 - r0)); const nh = (n.y - 0.35) * (1 - k) + h * k; if (Math.abs(nh - h) > 0.5) carved[iz * NX + ix] = 1; h = nh; }
+      const r0 = hw + 8, r1 = r0 + 45;
+      if (n.d < r1) { const k = smooth((n.d - r0) / (r1 - r0)); const nh = (n.y - 0.6) * (1 - k) + h * k; if (Math.abs(nh - h) > 0.5) carved[iz * NX + ix] = 1; h = nh; }
     }
     // 休憩所
     const dx = Math.max(pad.x0 - x, 0, x - pad.x1), dz = Math.max(pad.z0 - z, 0, z - pad.z1), dp = Math.hypot(dx, dz);
@@ -181,18 +194,18 @@ function post(city) {
   G.flat(-4000, 600, 4000, 4000, -0.05, { c: [1, 1, 1], lay: L.GRASS }, 20);
   for (const s of [-1, 1]) G.flat(s > 0 ? TX1 : -4000, -4000, s > 0 ? 4000 : TX0, -1000, -0.05, { c: [0.6, 0.75, 0.55], lay: L.FOREST }, 30);
   // --- 川（水瀬川）と堤防 ---
-  G.flat(-4000, 536, 4000, 594, -1.9, { c: [1, 1, 1], lay: L.WATER, mat: 7 }, 10);
+  G.flat(-4000, 536, 4000, 594, -1.9, { c: [1, 1, 1], lay: L.WATER, mat: 21 }, 10);
   G.quadN([-4000, -0.05, 530], [4000, -0.05, 530], [4000, -1.9, 538], [-4000, -1.9, 538], [0, 1, 0.2], { c: [0.45, 0.55, 0.32], lay: L.GRASS }, [[0, 0], [400, 0], [400, 1], [0, 1]]);
   G.quadN([-4000, -1.9, 592], [4000, -1.9, 592], [4000, -0.05, 600], [-4000, -0.05, 600], [0, 1, -0.2], { c: [0.45, 0.55, 0.32], lay: L.GRASS }, [[0, 0], [400, 0], [400, 1], [0, 1]]);
   city.mm.water.push({ x0: -2000, x1: 2000, z0: 534, z1: 596 });
   for (const b of city.bridges) {
     const x = b.x, hw = b.hw;
-    for (const s of [-1, 1]) city.addWall(x + s * (hw + 0.2), 524, x + s * (hw + 0.2), 606, -1, 1.3);
+    for (const s of [-1, 1]) city.addWall(x + s * (hw + 0.2), 529, x + s * (hw + 0.2), 601, -1, 1.3);
     city.add(x, 565, g => {
       g.s.box(x - hw - 0.5, -1.3, 524, x + hw + 0.5, -0.02, 606, { c: [0.62, 0.62, 0.6], noTop: true });
-      for (const s of [-1, 1]) { g.s.box(x + s * (hw + 0.2) - 0.25, 0, 524, x + s * (hw + 0.2) + 0.25, 0.75, 606, { c: [0.82, 0.82, 0.8] }); g.s.box(x + s * (hw + 0.2) - 0.06, 0.75, 524, x + s * (hw + 0.2) + 0.06, 1.15, 606, { c: [0.35, 0.45, 0.6] }); }
+      for (const s of [-1, 1]) { g.s.box(x + s * (hw + 0.2) - 0.25, 0, 529, x + s * (hw + 0.2) + 0.25, 0.75, 601, { c: [0.82, 0.82, 0.8] }); g.s.box(x + s * (hw + 0.2) - 0.06, 0.75, 529, x + s * (hw + 0.2) + 0.06, 1.15, 601, { c: [0.35, 0.45, 0.6] }); }
       for (const z of [548, 566, 584]) g.s.box(x - 1.5, -4, z - 1.2, x + 1.5, -1.3, z + 1.2, { c: [0.55, 0.55, 0.53] });
-      for (const z of [530, 600]) for (const s of [-1, 1]) g.s.cbox(x + s * (hw + 0.2), 0.9, z, 0.5, 1.8, 0.5, { c: [0.7, 0.7, 0.68] });
+      for (const z of [529, 601]) for (const s of [-1, 1]) g.s.cbox(x + s * (hw + 0.2), 0.9, z, 0.5, 1.8, 0.5, { c: [0.7, 0.7, 0.68] });
     });
   }
   // --- 山間部 ---
@@ -235,11 +248,14 @@ function post(city) {
   };
   const tb = city.tunnelBox;
   city.inTunnelXZ = (x, z) => x > tb.x0 && x < tb.x1 && z > tb.z0 && z < tb.z1;
+  roadExtras(city);
+  townExtras(city);
+  shadowsAndFar(city);
   // 遠景の山並み
   const M = new GB(), RM = rng(77);
-  for (let k = 0; k < 46; k++) {
-    const a = -Math.PI * 0.7 + k / 45 * Math.PI * 1.4, dist = 3000 + RM() * 700;
-    const cx = Math.sin(a) * dist, cz = -Math.cos(a) * dist - 600, r = 420 + RM() * 420, h = 260 + RM() * 320;
+  for (let k = 0; k < 80; k++) { // 北は高い山、東西と南は低い山並み（全周）
+    const a = -Math.PI + k / 80 * Math.PI * 2, north = Math.cos(a) > 0.2, dist = (north ? 3000 : 3300) + RM() * 700;
+    const cx = Math.sin(a) * dist, cz = -Math.cos(a) * dist - (north ? 600 : 0), r = 420 + RM() * 420, h = north ? 260 + RM() * 320 : 90 + RM() * 170;
     const c = [0.34 + RM() * 0.06, 0.45 + RM() * 0.06, 0.4 + RM() * 0.05];
     for (let s = 0; s < 6; s++) {
       const a0 = s / 6 * Math.PI * 2, a1 = (s + 1) / 6 * Math.PI * 2;
@@ -249,10 +265,13 @@ function post(city) {
   city.mountains = M;
   // 電車・路面電車の車体
   const T = new GB();
-  for (let k = 0; k < 4; k++) {
-    T.box(k * 20.5, 8.6, -1.45, k * 20.5 + 20, 12.1, 1.45, { c: [0.92, 0.93, 0.93], mat: 3, side: { lay: L.TRAINWIN, tw: 5, th: 3.5 } });
-    T.box(k * 20.5 + 1, 12.1, -1.2, k * 20.5 + 19, 12.3, 1.2, { c: [0.6, 0.6, 0.62] });
+  for (let k = 0; k < 4; k++) { // 4両編成（線路中心に原点）
+    T.box(k * 20.5, 9.0, -1.45, k * 20.5 + 20, 12.4, 1.45, { c: [0.92, 0.93, 0.93], mat: 3, side: { lay: L.TRAINWIN, tw: 5, th: 3.4 } });
+    T.box(k * 20.5 + 1, 12.4, -1.2, k * 20.5 + 19, 12.6, 1.2, { c: [0.6, 0.6, 0.62] });
+    for (const bx of [3, 17]) { T.box(k * 20.5 + bx - 1.3, 8.4, -1.1, k * 20.5 + bx + 1.3, 9.0, 1.1, { c: [0.2, 0.2, 0.22] }); }
+    if (k === 1 || k === 2) { const px = k * 20.5 + 10; T.beam([px - 1, 12.6, 0], [px, 13.0, 0], 0.03, { c: [0.25, 0.25, 0.25] }); T.beam([px, 13.0, 0], [px + 1, 12.6, 0], 0.03, { c: [0.25, 0.25, 0.25] }); T.box(px - 0.1, 12.95, -0.8, px + 0.1, 13.02, 0.8, { c: [0.25, 0.25, 0.25] }); }
   }
+  for (const [x, f] of [[-0.02, 1], [82.02, -1]]) for (const s of [-1, 1]) { T.box(x - 0.02, 9.6, s * 0.9 - 0.15, x + 0.02, 9.8, s * 0.9 + 0.15, { c: [1, 1, 0.9], mat: 2 }); void f; }
   city.trainGeo = T;
   const TR = new GB();
   for (const [z0, z1] of [[-9, -3.1], [-2.9, 2.9], [3.1, 9]]) TR.box(-1.2, 0.35, z0, 1.2, 3.3, z1, { c: [1, 1, 1], mat: 3, side: { lay: L.TRAMWIN, tw: 5.9, th: 2.95 }, top: { lay: L.ROOF, tw: 4 } });
@@ -296,6 +315,7 @@ function buildMountain(city) {
       for (let z = z0 + 6; z < z1; z += 22) for (let x = x0 + 6; x < x1; x += 22) {
         const tx = x + (Rt() - 0.5) * 16, tz = z + (Rt() - 0.5) * 16;
         if (tz > -1030) continue;
+        if (city.terraceRect && tx > city.terraceRect.x0 - 4 && tx < city.terraceRect.x1 + 4 && tz > city.terraceRect.z0 - 4 && tz < city.terraceRect.z1 + 4) continue;
         const n = city.mtnNearest(tx, tz); if (n && n.d < hw + 11) continue;
         const pd = city.restPad; if (tx > pd.x0 - 8 && tx < pd.x1 + 8 && tz > pd.z0 - 8 && tz < pd.z1 + 8) continue;
         const ty = city.terrainY(tx, tz), s = 0.8 + Rt() * 0.7;
@@ -303,9 +323,27 @@ function buildMountain(city) {
       }
     });
   }
+  // 棚田（山すその斜面。段ごとに水平な田と石垣）
+  { const T0 = { x0: -760, x1: -664, z0: -1136, z1: -1040 }; city.terraceRect = T0; let n = 0;
+    const cells = []; for (let x = T0.x0; x < T0.x1; x += 16) for (let z = T0.z0; z < T0.z1; z += 16) { const nn = city.mtnNearest(x + 8, z + 8); if (nn && nn.d < hw + 12) continue; cells.push([x, z, Math.round(city.terrainY(x + 8, z + 8) * 2) / 2]); }
+    for (const [x, z, y] of cells) { n++; city.add(x + 8, z + 8, g => { const lo = Math.min(...[[0, 0], [16, 0], [0, 16], [16, 16]].map(([a, b]) => city.terrainY(x + a, z + b))) - 0.5; g.s.box(x + 0.2, lo, z + 0.2, x + 15.8, y + 0.25, z + 15.8, { c: [0.6, 0.58, 0.52], lay: L.ROCK, side: { lay: L.ROCK, tw: 3, th: 3 }, noTop: true }); g.d1.flat(x + 0.6, z + 0.6, x + 15.4, z + 15.4, y + 0.05, { c: [1, 1, 1], lay: (x + z) % 32 ? L.PADDY : L.WATERPAD }, 8); g.s.box(x + 0.2, y, z + 0.2, x + 15.8, y + 0.3, z + 0.6, { c: [0.5, 0.62, 0.38], lay: L.GRASS }); }); }
+    city.stats.terraces = n; }
   // 道路面・区画線・ガードレール
   const full = mtn.full, pi = polyInfo(full), N = full.length;
-  const off = (i, o) => [full[i][0] + pi.nrm[i][0] * o, full[i][2] + 0.03, full[i][1] + pi.nrm[i][1] * o];
+  const off = (i, o) => [full[i][0] + pi.nrm[i][0] * o, full[i][2] + 0.06, full[i][1] + pi.nrm[i][1] * o];
+  const pdN = (pt) => { const pd = city.restPad; return pt[0] > pd.x0 - 8 && pt[0] < pd.x1 + 8 && pt[2] > pd.z0 - 8 && pt[2] < pd.z1 + 8; };
+  const noRail = i => pi.cum[i] < 35 || pi.cum[N - 1] - pi.cum[i] < 35; // 交差点付近はガードレールなし
+  // 待避所（2か所）：山側に幅3m×長さ30mの舗装を広げる
+  const L0 = pi.cum[N - 1], pulls = [];
+  function inT0(i) { return pi.cum[i] > mtn.ta - 40 && pi.cum[i] < mtn.tb + 40; }
+  for (const f of [0.28, 0.72]) { let i = 0; while (i < N - 1 && pi.cum[i] < L0 * f) i++; while (inT0(i)) i += 10; pulls.push({ s0: pi.cum[i] - 15, s1: pi.cum[i] + 15, i }); }
+  const inPull = s => pulls.find(p => s > p.s0 - 4 && s < p.s1 + 4);
+  // ガードレールは谷側（路肩の外が1.2m以上低い）だけ。描画と当たり判定は同じ判定を使う
+  const valley = (i, s) => { const p = off(i, s * (hw + 7)); return city.terrainY(p[0], p[2]) < full[i][2] - 1.2; };
+  for (const p of pulls) p.side = valley(p.i, 1) ? -1 : 1;
+  const railAt = (i, s) => !noRail(i) && !noRail(i + 1) && valley(i, s) && valley(i + 1, s) && !(inPull(pi.cum[i]) && inPull(pi.cum[i]).side === s);
+  city.pullouts = pulls;
+  city.mtnRail = { railAt, valley };
   const inT = i => pi.cum[i] > mtn.ta - 12 && pi.cum[i] < mtn.tb + 12;
   for (let i0 = 0; i0 < N - 1; i0 += 20) {
     const i1 = Math.min(N - 1, i0 + 20), mid = full[(i0 + i1) >> 1];
@@ -315,18 +353,30 @@ function buildMountain(city) {
         const asph = { c: tn ? [0.55, 0.55, 0.55] : [1, 1, 1], mat: 7, lay: L.ASPHALT };
         const a = off(i, -hw - 0.6), b = off(i + 1, -hw - 0.6), c = off(i + 1, hw + 0.6), d = off(i, hw + 0.6);
         g.d1.quadN(a, b, c, d, [0, 1, 0], asph, [[a[0] / 8, a[2] / 8], [b[0] / 8, b[2] / 8], [c[0] / 8, c[2] / 8], [d[0] / 8, d[2] / 8]]);
+        if (!tn) for (const s of [-1, 1]) { // 路肩（砂利）で切り盛りの境目を隠す
+          const e0 = off(i, s * (hw + 0.6)), e1 = off(i + 1, s * (hw + 0.6)), f1 = off(i + 1, s * (hw + 3.2)), f0 = off(i, s * (hw + 3.2));
+          f0[1] -= 0.25; f1[1] -= 0.25;
+          g.d1.quadN(e0, e1, f1, f0, [0, 1, 0], { c: [0.78, 0.74, 0.66], lay: L.FIELD }, [[e0[0] / 4, e0[2] / 4], [e1[0] / 4, e1[2] / 4], [f1[0] / 4, f1[2] / 4], [f0[0] / 4, f0[2] / 4]]);
+        }
         const ln = (o0, o1, col) => g.d2.quadN(off(i, o0), off(i + 1, o0), off(i + 1, o1), off(i, o1), [0, 1, 0], { c: col });
         ln(-0.08, 0.08, YEL); ln(hw - 0.35, hw - 0.2, WHITE); ln(-hw + 0.2, -hw + 0.35, WHITE);
+        const pu = inPull(pi.cum[i]);
+        if (pu && !tn) { const s = pu.side, a = off(i, s * (hw + 0.6)), b = off(i + 1, s * (hw + 0.6)), c = off(i + 1, s * (hw + 3.6)), d = off(i, s * (hw + 3.6)); c[1] = b[1]; d[1] = a[1]; g.d1.quadN(a, b, c, d, [0, 1, 0], { c: [0.95, 0.95, 0.95], mat: 7, lay: L.ASPHALT }, [[a[0] / 8, a[2] / 8], [b[0] / 8, b[2] / 8], [c[0] / 8, c[2] / 8], [d[0] / 8, d[2] / 8]]); }
         if (tn) continue;
-        // ガードレール（両側）
+        // 矢羽根（積雪時の道路端を示す紅白ポール）
+        if (i % 8 === 0 && full[i][1] < -1080) for (const s of [-1, 1]) { const p = off(i, s * (hw + 1.4)); if (pdN(p) || (pu && pu.side === s)) continue; g.det.cyl(p[0], p[1] - 0.06, p[2], 0.035, 4.6, 4, { c: [0.95, 0.95, 0.95] }); for (let k = 0; k < 4; k++) g.det.cyl(p[0], p[1] + 0.4 + k * 1.0, p[2], 0.04, 0.5, 4, { c: [0.9, 0.15, 0.1] }); g.det.cbox(p[0] - pi.nrm[i][0] * s * 0.2, p[1] + 4.3, p[2] - pi.nrm[i][1] * s * 0.2, 0.35, 0.5, 0.35, { c: [0.95, 0.85, 0.1] }); }
+        // ガードレール（谷側のみ）
         for (const s of [-1, 1]) {
+          if (!railAt(i, s)) continue;
           const o = s * (hw + 0.45), p = off(i, o), q = off(i + 1, o);
+          if (pdN(p) || pdN(q)) continue;
           g.s.quadN([p[0], p[1] + 0.45, p[2]], [q[0], q[1] + 0.45, q[2]], [q[0], q[1] + 0.8, q[2]], [p[0], p[1] + 0.8, p[2]], [pi.nrm[i][0] * s, 0, pi.nrm[i][1] * s], { c: [0.9, 0.9, 0.88] });
           if (i % 1 === 0) g.s.cbox(p[0], p[1] + 0.35, p[2], 0.1, 0.7, 0.1, { c: [0.6, 0.6, 0.6] });
         }
       }
     });
     for (let i = i0; i < i1; i++) if (!inT(i) && !inT(i + 1)) for (const s of [-1, 1]) {
+      if (!railAt(i, s)) continue;
       const o = s * (hw + 0.45), p = off(i, o), q = off(i + 1, o);
       // 休憩所の入口はガードレールを切る
       const pd = city.restPad, near = (pt) => pt[0] > pd.x0 - 6 && pt[0] < pd.x1 + 6 && pt[2] > pd.z0 - 6 && pt[2] < pd.z1 + 6;
@@ -339,9 +389,23 @@ function buildMountain(city) {
   for (let i = 2; i < N - 2; i++) {
     const s = pi.cum[i]; if (s - lastSign < 120 || inT(i)) continue;
     const a = pi.dirs[i - 2], b = pi.dirs[i + 1], turn = a[0] * b[1] - a[1] * b[0];
-    if (Math.abs(turn) > 0.18) { lastSign = s; const p = off(Math.max(0, i - 8), hw + 1.0), d = pi.dirs[Math.max(0, i - 8)]; city.add(p[0], p[2], g => { g.s.setXf(0, p[1], 0, 0); city.signPole(g.s, p[0], p[2], d, L.CURVE, 0.7, 0.7, 2.0, 1); g.s.clearXf(); }); }
+    if (Math.abs(turn) > 0.18) { lastSign = s; const p = off(Math.max(0, i - 8), hw + 1.0), d = pi.dirs[Math.max(0, i - 8)]; city.add(p[0], p[2], g => { g.det.setXf(0, p[1] - 0.06, 0, 0); city.signPole(g.det, p[0], p[2], d, L.CURVE, 0.7, 0.7, 2.0, 1); g.det.clearXf(); }); }
   }
-  for (const [i, dir] of [[6, 1], [N - 7, -1]]) { const p = off(i, (hw + 1.0) * dir); const d = dir > 0 ? pi.dirs[i] : [-pi.dirs[i][0], -pi.dirs[i][1]]; city.add(p[0], p[2], g => city.signPole(g.s, p[0], p[2], d, L.SP40, 0.6, 0.6, 2.2)); }
+  // カーブミラー（見通しの悪いカーブの外側）
+  let mir = 0, lastM = -999;
+  for (let i = 4; i < N - 4 && mir < 14; i++) {
+    const s = pi.cum[i]; if (s - lastM < 110 || inT(i) || inPull(s)) continue;
+    const a = pi.dirs[i - 4], b = pi.dirs[i + 3], turn = a[0] * b[1] - a[1] * b[0];
+    if (Math.abs(turn) < 0.22) continue;
+    const side = turn > 0 ? 1 : -1, p = off(i, side * (hw + 1.0));
+    if (pdN(p)) continue;
+    lastM = s; mir++;
+    const yaw = Math.atan2(-pi.nrm[i][0] * side, -pi.nrm[i][1] * side);
+    city.addBox(p[0] - 0.1, p[2] - 0.1, p[0] + 0.1, p[2] + 0.1, 'p');
+    city.add(p[0], p[2], g => city.curveMirror(g.det, p[0], p[2], yaw, p[1] - 0.06));
+  }
+  city.stats.mtnMirrors = mir;
+  for (const [i, dir] of [[6, 1], [N - 7, -1]]) { const p = off(i, (hw + 1.0) * dir); const d = dir > 0 ? pi.dirs[i] : [-pi.dirs[i][0], -pi.dirs[i][1]]; city.add(p[0], p[2], g => { g.det.setXf(0, p[1] - 0.06, 0, 0); city.signPole(g.det, p[0], p[2], d, L.SP40, 0.6, 0.6, 2.2); g.det.clearXf(); }); }
   // トンネル
   let ia = 0, ib = 0; for (let i = 0; i < N; i++) { if (pi.cum[i] <= mtn.ta - 12) ia = i; if (pi.cum[i] <= mtn.tb + 12) ib = i; }
   ib = Math.min(N - 1, ib + 1);
@@ -395,7 +459,7 @@ function buildMountain(city) {
   city.addBox(pd.x0 + 4, pd.z0 + 2, pd.x0 + 22, pd.z0 + 11);
   city.mm.lots.push({ x0: pd.x0, x1: pd.x1, z0: pd.z0, z1: pd.z1 });
   const Rp = rng(55);
-  for (let k = 0; k < 4; k++) if (Rp() < 0.7) { const m = pickModel(Rp), c = pickColor(m, Rp), x = pd.x0 + 7.4 + k * 2.8, z = pd.z1 - 3.5; city.addCarBox(x, z, Math.PI, m); city.add(x, z, g => city.bakeCar(g.s, m, c, x, z, Math.PI, pd.y)); }
+  for (let k = 0; k < 4; k++) if (Rp() < 0.7) { const m = pickModel(Rp), c = pickColor(m, Rp), x = pd.x0 + 7.4 + k * 2.8, z = pd.z1 - 3.5; city.addCarBox(x, z, Math.PI, m); city.add(x, z, g => city.bakeCar(g.det, m, c, x, z, Math.PI, pd.y)); }
   void e;
 }
 function conifer(gb, x, y, z, s, R) {
@@ -444,11 +508,16 @@ function suburb(city, r, R, opt) {
   }
 }
 function park(city, r, R) {
+  city.addBox(r.x1 - 7, r.z0 + 2, r.x1 - 3, r.z0 + 5); city.stats.parkToilets = (city.stats.parkToilets || 0) + 1;
   const trees = []; for (let k = 0; k < 8; k++) trees.push([r.x0 + 3 + R() * (r.x1 - r.x0 - 6), r.z0 + 3 + R() * (r.z1 - r.z0 - 6), R() * 1e6 | 0]);
   city.mm.lots.push(r);
   city.add((r.x0 + r.x1) / 2, (r.z0 + r.z1) / 2, g => {
     g.d1.flat(r.x0, r.z0, r.x1, r.z1, 0.02, { c: [0.9, 1, 0.85], lay: L.GRASS }, 8);
-    for (const [x, z, s] of trees) city.tree(g.s, x, z, rng(s));
+    for (const [x, z, s] of trees) city.tree(g.det, x, z, rng(s));
+    // ベンチ・トイレ・花壇
+    for (const k of [0, 1]) { const bx = r.x0 + 4 + k * 6, bz = r.z1 - 3; g.s.box(bx, 0.4, bz - 0.25, bx + 1.8, 0.48, bz + 0.25, { c: [0.6, 0.42, 0.28] }); for (const dx of [0.1, 1.6]) g.s.box(bx + dx, 0, bz - 0.2, bx + dx + 0.1, 0.4, bz + 0.2, { c: [0.4, 0.4, 0.4] }); }
+    g.s.box(r.x1 - 7, 0, r.z0 + 2, r.x1 - 3, 2.8, r.z0 + 5, { c: [0.85, 0.82, 0.75] }); g.s.box(r.x1 - 7.3, 2.8, r.z0 + 1.7, r.x1 - 2.7, 3.0, r.z0 + 5.3, { c: [0.4, 0.4, 0.42] });
+    for (let k = 0; k < 4; k++) { const px = r.x0 + 3 + k * 3; g.s.box(px, 0, r.z0 + 1, px + 1.6, 0.5, r.z0 + 1.8, { c: [0.7, 0.68, 0.62] }); g.s.box(px + 0.1, 0.5, r.z0 + 1.1, px + 1.5, 0.75, r.z0 + 1.7, { c: [0.9, 0.4 + k * 0.1, 0.5], lay: L.TREE }); }
     const cx = (r.x0 + r.x1) / 2, cz = (r.z0 + r.z1) / 2;
     g.s.box(cx - 2, 0, cz - 0.3, cx + 2, 2.2, cz + 0.3, { c: [0.85, 0.3, 0.2] }); // ブランコ
     g.s.box(cx + 4, 0, cz - 1, cx + 6, 0.4, cz + 1, { c: [0.9, 0.8, 0.5] }); // 砂場
@@ -469,9 +538,10 @@ function shrine(city, r) {
     g.s.box(cx - 5, 0, cz - 6, cx + 5, 3.6, cz + 2, { c: [0.55, 0.38, 0.25] });
     g.s.gable(cx - 5, cz - 6, cx + 5, cz + 2, 3.6, 3.2, { c: [0.25, 0.3, 0.28], lay: L.KAWARA, tw: 2, gc: [0.55, 0.38, 0.25] }, 1.2);
     for (const s of [-1, 1]) { g.s.cbox(cx + s * 2.2, 0.8, cz + 5, 0.5, 1.6, 0.5, { c: [0.7, 0.7, 0.68] }); g.s.cbox(cx + s * 2.2, 1.8, cz + 5, 0.7, 0.5, 0.7, { c: [0.7, 0.7, 0.68] }); }
-    for (let k = 0; k < 14; k++) { const a = k / 14 * Math.PI * 2; city.tree(g.s, cx + Math.cos(a) * (r.x1 - r.x0) * 0.42, cz + Math.sin(a) * (r.z1 - r.z0) * 0.42, R); }
+    for (let k = 0; k < 14; k++) { const a = k / 14 * Math.PI * 2; city.tree(g.det, cx + Math.cos(a) * (r.x1 - r.x0) * 0.42, cz + Math.sin(a) * (r.z1 - r.z0) * 0.42, R); }
   });
   city.addBox(cx - 5, cz - 6, cx + 5, cz + 2);
+  if (r.x1 - r.x0 > 90 && r.z1 - r.z0 > 70) cemetery(city, r.x0 + 22, r.z0 + 31); // 境内の一角に寺と墓地
   for (const s of [-1, 1]) city.addBox(cx + s * 2.6 - 0.3, r.z1 - 6.3, cx + s * 2.6 + 0.3, r.z1 - 5.7, 'p');
 }
 
@@ -489,18 +559,18 @@ function industrial(city, r, R) {
     city.lot(f, f.F * 0.72, f.F - 4, 0, Math.min(60, f.D - 10), R, { fill: 0.5 });
     // 煙突・タンク
     const t = f.W(f.F * 0.35, f.D - 12);
-    if (R() < 0.6) { city.addBox(t[0] - 1.6, t[1] - 1.6, t[0] + 1.6, t[1] + 1.6, 'p'); city.add(t[0], t[1], g => { for (let k2 = 0; k2 < 6; k2++) g.s.cyl(t[0], k2 * 6, t[1], 1.5, 6, 10, { c: k2 % 2 ? [0.85, 0.2, 0.15] : [0.95, 0.95, 0.95] }); }); }
+    if (R() < 0.6) { (city.smokes = city.smokes || []).push([t[0], 36, t[1]]); city.addBox(t[0] - 1.6, t[1] - 1.6, t[0] + 1.6, t[1] + 1.6, 'p'); city.add(t[0], t[1], g => { for (let k2 = 0; k2 < 6; k2++) g.s.cyl(t[0], k2 * 6, t[1], 1.5, 6, 10, { c: k2 % 2 ? [0.85, 0.2, 0.15] : [0.95, 0.95, 0.95] }); }); }
     const t2 = f.W(f.F * 0.55, f.D - 10);
     if (R() < 0.5) { city.addBox(t2[0] - 6, t2[1] - 6, t2[0] + 6, t2[1] + 6); city.add(t2[0], t2[1], g => { g.s.cyl(t2[0], 0, t2[1], 6, 9, 14, { c: [0.85, 0.86, 0.84] }); }); }
     // トラック
     const ty = f.W(12, 14), yaw = Math.atan2(f.inv[0], f.inv[1]) + Math.PI / 2;
-    for (let q = 0; q < 3; q++) { const p = f.W(12 + q * 5, 18); city.addCarBox(p[0], p[1], yaw, truck); city.add(p[0], p[1], g => city.bakeCar(g.s, truck, { rgb: q % 2 ? [0.95, 0.95, 0.95] : [0.6, 0.75, 0.85] }, p[0], p[1], yaw)); }
+    for (let q = 0; q < 3; q++) { const p = f.W(12 + q * 5, 18); city.addCarBox(p[0], p[1], yaw, truck); city.add(p[0], p[1], g => city.bakeCar(g.det, truck, { rgb: q % 2 ? [0.95, 0.95, 0.95] : [0.6, 0.75, 0.85] }, p[0], p[1], yaw)); }
     void ty;
   }
 }
 
 // ============ 郊外ロードサイド（国道沿い） ============
-const RS_LIST = ['DEALER', 'GYUDON', 'PACHI', 'SUSHI', 'HOMEC', 'BOOKS2', 'DEALER2', 'CONBINI', 'TIRE', 'FAMIRES', 'MALL2', 'DRUG', 'DENKI', 'BURGER', 'SUPER', 'RAMEN', 'CONBINI2'];
+const RS_LIST = ['DEALER', 'GYUDON', 'GAS2', 'PACHI', 'SUSHI', 'HOMEC', 'BOOKS2', 'DEALER2', 'CONBINI', 'TIRE', 'GAS', 'FAMIRES', 'MALL2', 'DRUG', 'DENKI', 'BURGER', 'SUPER', 'RAMEN', 'CONBINI2'];
 let rsIdx = 0;
 function roadside(city, r, R, side, xa) {
   const f = city.frame(r, side);
@@ -511,6 +581,7 @@ function roadside(city, r, R, side, xa) {
     if (u + w > f.F - 2) break;
     const ld = big ? 46 : 28, bd = k === 'MALL2' ? 70 : big ? 40 : 18;
     const sign = L['SG_' + k];
+    if (k.startsWith('GAS')) { city.gasStation(f, u, u + 40, R, sign); u += 44; continue; }
     city.lot(f, u, u + w, 0, ld, R, { fill: k.startsWith('DEALER') ? 0.85 : 0.3, ai: !k.startsWith('DEALER'), sign, signH: big ? 8 : 6 });
     city.building(f, u + 3, u + w - 3, ld + 1, ld + 1 + bd, { R, floors: k === 'MALL2' ? 3 : 1, fh: k === 'MALL2' ? 5 : big ? 8 : 4.5, fh0: 0, lay: big ? L.METAL : L.SHOP, tw: 6, th: big ? 8 : 4.5, col: big ? [0.9, 0.9, 0.88] : [0.96, 0.95, 0.93], sign, signY: big ? 5 : 3, signH: big ? 4 : 1.8, roofItems: big });
     u += w + 4;
@@ -520,7 +591,8 @@ function roadside(city, r, R, side, xa) {
 }
 
 // ============ 田園地帯 ============
-function farm(city, r, R) {
+function farm(city, r, R) { if (!city.stats.riceCenter && r.x1 - r.x0 > 200 && r.z1 - r.z0 > 150 && r.z0 > 600) { farmCenter(city, r.x0 + 40, r.z0 + 30); return farmV4(city, { ...r, z0: r.z0 + 70 }, R); } return farmV4(city, r, R); }
+function farmOld(city, r, R) {
   const W = r.x1 - r.x0, D = r.z1 - r.z0; if (W < 20 || D < 20) return;
   const pw = 42, pd = 32, cols = Math.floor(W / pw), rows = Math.floor(D / pd);
   // 農家の集落
@@ -552,8 +624,8 @@ function farm(city, r, R) {
   city.add(sx, sz, g => {
     g.s.box(sx, 0, sz, sx + 12, 4.5, sz + 8, { c: [0.7, 0.72, 0.74], side: { lay: L.METAL, tw: 6, th: 4.5 } });
     g.s.gable(sx, sz, sx + 12, sz + 8, 4.5, 1.6, { c: [0.55, 0.3, 0.25], lay: L.METAL, tw: 3 }, 0.3);
-    city.bakeCar(g.s, kt, { rgb: [0.95, 0.95, 0.95] }, hx + 30, hz + 31, Math.PI / 2);
-    for (let t = 0; t < 12; t++) { const a = t / 12 * Math.PI * 2; city.tree(g.s, hx + 25 + Math.cos(a) * 30, hz + 20 + Math.sin(a) * 24, Rh); }
+    city.bakeCar(g.det, kt, { rgb: [0.95, 0.95, 0.95] }, hx + 30, hz + 31, Math.PI / 2);
+    for (let t = 0; t < 12; t++) { const a = t / 12 * Math.PI * 2; city.tree(g.det, hx + 25 + Math.cos(a) * 30, hz + 20 + Math.sin(a) * 24, Rh); }
   });
 }
 // ============ 河川敷 ============
@@ -564,11 +636,11 @@ function riverPark(city, r, R) {
   city.add((r.x0 + r.x1) / 2, (r.z0 + r.z1) / 2, g => {
     g.d1.flat(r.x0, r.z0, r.x1, r.z1, -0.05, { c: [0.9, 1, 0.85], lay: L.GRASS }, 8);
     g.d1.flat(r.x0, r.z0 + 2, r.x1, r.z0 + 4.5, -0.04, { c: [0.85, 0.8, 0.72], lay: L.SIDEWALK }, 2); // 遊歩道
-    for (const [x, z] of trees) city.tree(g.s, x, z, R);
+    for (const [x, z] of trees) cherry(g.det, x, z, R, 0.9);
     for (let x = r.x0 + 40; x < r.x1 - 10; x += 120) g.s.box(x, 0, r.z0 + 5, x + 1.6, 0.45, r.z0 + 5.5, { c: [0.6, 0.45, 0.3] });
   });
   const p = [r.x0 + 6, r.z0 + 1];
-  city.add(p[0], p[1], g => city.poleSign(g.s, p[0], p[1], city.frame(r, 'n'), L.SG_RIVERPARK, 3));
+  city.add(p[0], p[1], g => city.poleSign(g.det, p[0], p[1], city.frame(r, 'n'), L.SG_RIVERPARK, 3));
 }
 
 // ============ 鉄道 ============
@@ -582,9 +654,18 @@ function railway(city) {
       for (const zr of [-2.4, -0.9, 0.9, 2.4]) g.s.box(x0, 8.2, RZ + zr - 0.05, x0 + 100, 8.35, RZ + zr + 0.05, { c: [0.4, 0.35, 0.3] });
       for (let x = x0 + 10; x < x0 + 100; x += 25) if (!isRoad(x)) g.s.box(x - 1, -0.3, RZ - 2, x + 1, 7, RZ + 2, { c: [0.68, 0.68, 0.66] });
       for (let x = x0; x < x0 + 100; x += 50) g.s.cyl(x, 8.2, RZ + 4.5, 0.08, 6, 4, { c: [0.5, 0.5, 0.5] }, false);
-      if (x0 >= 0 && x0 < 200) {
-        g.s.box(x0 + 5, 12, RZ - 4.5, x0 + 95, 12.3, RZ + 4.5, { c: [0.55, 0.6, 0.62] });
-        g.s.box(x0 + 5, 8.2, RZ - 4.6, x0 + 95, 9.3, RZ - 3.2, { c: [0.8, 0.8, 0.78] });
+      // 架線（各線路の中心の上）
+      for (const zc of [-1.65, 1.65]) g.lines.line([x0, 13.0, RZ + zc], [x0 + 100, 13.0, RZ + zc], [0.15, 0.15, 0.15]);
+      for (let x = x0; x < x0 + 100; x += 50) g.s.beam([x, 13.3, RZ - 4.5], [x, 13.3, RZ + 4.5], 0.05, { c: [0.5, 0.5, 0.5] });
+      if (x0 >= 0 && x0 < 200) { // 水瀬駅の高架ホーム（相対式2面）
+        g.s.box(x0 + 5, 14.0, RZ - 4.8, x0 + 95, 14.3, RZ + 4.8, { c: [0.55, 0.6, 0.62] });
+        for (const s of [-1, 1]) {
+          g.s.box(x0 + 5, 8.2, RZ + s * 3.15 - 0.7, x0 + 95, 9.25, RZ + s * 3.15 + 0.7, { c: [0.8, 0.8, 0.78], top: { lay: L.TACTILE, tw: 2 } });
+          for (let x = x0 + 15; x < x0 + 95; x += 20) g.s.cyl(x, 9.25, RZ + s * 3.9, 0.08, 4.75, 6, { c: [0.6, 0.62, 0.64] });
+          g.s.panel(x0 + 44, RZ + s * 3.6, x0 + 56, RZ + s * 3.6, 11.0, 12.5, 0, [0, 0, -s], { c: [1, 1, 1], mat: 16, lay: L.SG_STATION }, s > 0 ? undefined : [[1, 1], [0, 1], [0, 0], [1, 0]]);
+          // 階段（ホームから地上へ）
+          for (let k = 0; k < 10; k++) g.s.box(x0 + 70 + k * 1.6, 0, RZ + s * 5.2 - 0.9, x0 + 71.6 + k * 1.6, 9.25 - k * 0.92, RZ + s * 5.2 + 0.9, { c: [0.72, 0.72, 0.7] });
+        }
       }
     });
     for (let x = x0 + 10; x < x0 + 100; x += 25) if (!isRoad(x)) city.addBox(x - 1, RZ - 2, x + 1, RZ + 2, 'p', -50, 7);
@@ -622,9 +703,6 @@ function tram(city) {
     const o = e.base + 0.5 * e.lw, p = city.edgePt(e, s, e.sp.hw + 0.8);
     city.add(p[0], p[2], g => {
       city.band(g.d2, e, s - 9, s + 9, o - 1.5, o - 1.35, { c: YEL }); city.band(g.d2, e, s - 9, s + 9, o + 1.35, o + 1.5, { c: YEL });
-      city.signPole(g.s, p[0], p[2], [-e.d[0], -e.d[1]], L.SG_TRAMSTOP, 2.0, 0.5, 2.4, 0);
-      const c = city.edgePt(e, s + 3, e.sp.hw + 2.0), c2 = city.edgePt(e, s - 3, e.sp.hw + 3.2);
-      g.s.box(Math.min(c[0], c2[0]), 2.6, Math.min(c[2], c2[2]), Math.max(c[0], c2[0]), 2.75, Math.max(c[2], c2[2]), { c: [0.3, 0.45, 0.65] });
     });
   }
 }
