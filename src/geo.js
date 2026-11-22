@@ -50,9 +50,9 @@ export class GB {
   box(x0, y0, z0, x1, y1, z1, o) {
     const s = o.side, t = o.top;
     const so = s ? { ...o, lay: s.lay } : o, to = t ? { ...o, lay: t.lay } : o;
-    const tw = s ? s.tw : 0, th = s ? s.th : 0;
+    const tw = s ? s.tw : 0, th = s ? s.th : 0, uo = s && s.uo || 0;
     const wall = (a, b, n, len) => {
-      const uv = tw ? [[0, (y1 - y0) / th], [len / tw, (y1 - y0) / th], [len / tw, 0], [0, 0]] : [[0, 1], [1, 1], [1, 0], [0, 0]];
+      const uv = tw ? [[uo, (y1 - y0) / th], [uo + len / tw, (y1 - y0) / th], [uo + len / tw, 0], [uo, 0]] : [[0, 1], [1, 1], [1, 0], [0, 0]];
       this.quadN([a[0], y0, a[1]], [b[0], y0, b[1]], [b[0], y1, b[1]], [a[0], y1, a[1]], n, so, uv);
     };
     if (!o.noSide) {

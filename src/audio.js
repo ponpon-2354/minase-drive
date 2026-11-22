@@ -55,10 +55,11 @@ export class Sound {
     const f = s.rpm / 60 * 1.5;
     this.o1.frequency.setTargetAtTime(f, t, 0.03); this.o2.frequency.setTargetAtTime(f * 0.5, t, 0.03); this.o3.frequency.setTargetAtTime(f * 2, t, 0.03);
     this.engNoise.fl.frequency.setTargetAtTime(f * 3, t, 0.05);
-    this.engNoise.gn.gain.setTargetAtTime(0.05 + s.thr * 0.12, t, k);
     const ins = s.cockpit ? 0.8 : 1;
     this.ef.frequency.setTargetAtTime((350 + s.rpm * 0.22 + s.thr * 900) * ins, t, 0.05);
-    this.eg.gain.setTargetAtTime((0.09 + s.thr * 0.14 + s.rpm / 6800 * 0.08) * (s.thr < 0.05 && s.kmh > 10 ? 0.65 : 1), t, k);
+    const eng = s.engine ?? 1; // 運転していない時（メニュー・タイトル）はエンジン音を絞る
+    this.eg.gain.setTargetAtTime((0.09 + s.thr * 0.14 + s.rpm / 6800 * 0.08) * (s.thr < 0.05 && s.kmh > 10 ? 0.65 : 1) * eng, t, eng < 1 ? 0.6 : k);
+    this.engNoise.gn.gain.setTargetAtTime((0.05 + s.thr * 0.12) * eng, t, k);
     const v = s.kmh / 100;
     this.road.gn.gain.setTargetAtTime(Math.min(0.35, v * 0.28) * (s.rain ? 1.4 : 1), t, k);
     this.road.fl.frequency.setTargetAtTime(250 + v * 500 + (s.rain ? 600 : 0), t, k);
@@ -67,8 +68,41 @@ export class Sound {
     this.city.gn.gain.setTargetAtTime(0.03 + s.cityK * 0.05, t, 0.5);
     this.npc.gn.gain.setTargetAtTime(Math.min(0.25, s.npcNear * 0.6), t, 0.1);
     this.npcG.gain.setTargetAtTime(Math.min(0.08, s.npcNear * 0.2), t, 0.1);
+    this.npcHum.frequency.setTargetAtTime(45 + Math.min(60, (s.npcV || 0) * 3.2), t, 0.2); // すれ違う車の速さで音程が変わる
+    this.npc.fl.frequency.setTargetAtTime(140 + Math.min(500, (s.npcV || 0) * 25), t, 0.2);
     this.squeal.gn.gain.setTargetAtTime(s.slip ? 0.12 : (s.brake > 0.7 && s.kmh > 5 && s.kmh < 40 ? 0.05 : 0), t, 0.05);
-    this.hg.gain.setTargetAtTime(s.horn ? 0.5 : 0, t, 0.01);
+    this.hg.gain.setTargetAtTime(s.horn ? 0.3 : 0, t, 0.01);
+    this.ambient(s.amb || null);
+  }
+  // 環境音：地区ごとに 鳥・虫・川・街のざわめき（合成音）
+  ambient(a) {
+    if (!this.ok) return;
+    const ctx = this.ctx, t = ctx.currentTime;
+    if (!this.amb) {
+      const mk = (type, f, q) => { const s = ctx.createBufferSource(); const b = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate), d = b.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1; s.buffer = b; s.loop = true; s.start(); const fl = ctx.createBiquadFilter(); fl.type = type; fl.frequency.value = f; fl.Q.value = q; const g = ctx.createGain(); g.gain.value = 0; s.connect(fl); fl.connect(g); g.connect(this.master); return g; };
+      this.amb = { river: mk('bandpass', 700, 0.5), insect: mk('bandpass', 4200, 12), crowd: mk('bandpass', 500, 0.8), nextBird: 0 };
+    }
+    const A = a || {}, k = 1.2;
+    this.amb.river.gain.setTargetAtTime((A.river || 0) * 0.08, t, k);
+    this.amb.insect.gain.setTargetAtTime((A.insect || 0) * 0.025, t, k);
+    this.amb.crowd.gain.setTargetAtTime((A.crowd || 0) * 0.03, t, k);
+    if ((A.bird || 0) > 0 && t > this.amb.nextBird) { // ときどき小鳥のさえずり
+      this.amb.nextBird = t + 2 + Math.random() * 6;
+      for (let n = 0; n < 2 + (Math.random() * 3 | 0); n++) { const o = ctx.createOscillator(), g = ctx.createGain(), t0 = t + n * 0.16, f = 2600 + Math.random() * 1600; o.type = 'sine'; o.frequency.setValueAtTime(f, t0); o.frequency.exponentialRampToValueAtTime(f * 1.35, t0 + 0.08); g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(0.03 * A.bird, t0 + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.12); o.connect(g); g.connect(this.master); o.start(t0); o.stop(t0 + 0.15); }
+    }
+  }
+  // 夕方5時のチャイム（ウェストミンスターの鐘のメロディー：パブリックドメイン）
+  chime() {
+    if (!this.ok) return;
+    const ctx = this.ctx, t = ctx.currentTime + 0.1, N = { E4: 329.6, C4: 261.6, D4: 293.7, G3: 196 };
+    const seq = ['E4', 'C4', 'D4', 'G3', null, 'G3', 'D4', 'E4', 'C4'];
+    seq.forEach((n, i) => { if (!n) return; const t0 = t + i * 0.9; for (const [m, a] of [[1, 0.05], [2.01, 0.015], [3.02, 0.008]]) { const o = ctx.createOscillator(), g = ctx.createGain(); o.type = 'sine'; o.frequency.value = N[n] * m; g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(a, t0 + 0.03); g.gain.exponentialRampToValueAtTime(0.0001, t0 + 2.6); o.connect(g); g.connect(this.master); o.start(t0); o.stop(t0 + 2.7); } });
+  }
+  // 操作音（Rギア切替など）
+  beep(f = 1200, d = 0.08, n = 1) {
+    if (!this.ok) return;
+    const ctx = this.ctx, t = ctx.currentTime;
+    for (let i = 0; i < n; i++) { const o = ctx.createOscillator(), g = ctx.createGain(), t0 = t + i * (d + 0.05); o.type = 'square'; o.frequency.value = f; g.gain.setValueAtTime(0.04, t0); g.gain.setValueAtTime(0.0001, t0 + d); o.connect(g); g.connect(this.master); o.start(t0); o.stop(t0 + d + 0.01); }
   }
   suspend() { if (this.ok) this.ctx.suspend(); }
   resume() { if (this.ok) this.ctx.resume(); }
@@ -114,8 +148,10 @@ function makeMelody(t) {
     }
     return out;
   };
+  // 32小節：A A' B A | C C' B' A''（Cはサビ前の展開、各2小節フレーズ×16）
   const A = phrase(0), B = phrase(4), A2 = A.map((bar, i) => i === 1 ? phrase(2)[1] : bar);
-  bars.push(...A, ...A2, ...B, ...A);
+  const C = phrase(6), C2 = phrase(2), B2 = B.map((bar, i) => i === 1 ? phrase(6)[1] : bar), A3 = A2.map(bar => bar.map(n => n && R() < 0.25 ? n + (R() < 0.5 ? 2 : -2) : n));
+  bars.push(...A, ...A2, ...B, ...A, ...A2, ...B2, ...A, ...A2, ...C, ...C2, ...C, ...B2, ...B, ...A2, ...B2, ...A3);
   return bars;
 }
 export class Music {
@@ -177,11 +213,17 @@ export class Music {
     s.connect(f); f.connect(g); g.connect(this.bus); s.start(t, Math.random() * 0.5); s.stop(t + 0.2);
   }
   play(tr, step, t, spb) {
-    const st = step % 16, bar = Math.floor(step / 16) % tr.prog.length, ch = tr.prog[bar], root = tr.key + ch[0], tones = Q[ch[1]];
+    const st = step % 16, bi = Math.floor(step / 16), sec = bi % 32; // 32小節で1コーラス
+    const bridge = sec >= 16 && sec < 22, brk = sec >= 22 && sec < 24; // 展開部は和音進行をずらす／ブレイクはドラムを抜く
+    const bar = (bi + (bridge ? 3 : 0)) % tr.prog.length, ch = tr.prog[bar], root = tr.key + ch[0] + (bridge && tr.id !== 'euro' ? 0 : 0), tones = Q[ch[1]];
     const intro = step < 32; // 最初の2小節はドラム控えめ
+    const fill = sec % 8 === 7 && st >= 12; // 8小節ごとのフィル
+    if (fill && st % 1 === 0 && !brk) this.hit('snare', t, 0.12 + (st - 12) * 0.05);
+    if (brk && st !== 0) { if (tr.pad && st === 8) { } } else {
     if (tr.kick[st] === '1') this.hit('kick', t, tr.id === 'rain' ? 0.35 : 0.7);
     if (tr.snare[st] === '1' && !(intro && tr.id === 'rain')) this.hit('snare', t, tr.id === 'euro' ? 0.4 : 0.28);
     if (tr.hat[st] === '1') this.hit('hat', t, st % 4 === 2 ? 0.14 : 0.08);
+    }
     // ベース
     const bRoot = root - 24 + (ch[0] > 6 ? -12 : 0) + 12;
     const bp = { pop: '1000101000101010', night: '1000000010000010', soft: '1000000000000000', euro: '0010001000100010', walk: '1000100010001000' }[tr.bass];

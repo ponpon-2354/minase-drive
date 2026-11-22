@@ -1,26 +1,27 @@
 // 架空都市「水瀬市」：道路ネットワーク・信号・街区・建物・駐車場・チャンク管理
 // v0.2：約4km四方（x,z = -2000〜2000）。中心市街地（1km四方）＋郊外・工業団地・ロードサイド・河川・田園・山間部
 import { GB, hex } from './geo.js';
-import { L } from './textures.js';
+import { L, plateUV, PLATES } from './textures.js';
 import { rng, clamp } from './math.js';
-import { buildCar, pickModel, pickColor, MODELS } from './carmodels.js';
+import { buildHull, pickModel, pickColor, MODELS, plateClass } from './carmodels.js';
 import { buildWorld } from './world.js';
+import { installProps } from './props.js';
 
 export const LINES = [-500, -375, -250, -125, 0, 125, 250, 375, 500];
 export const XL = [-2000, -1500, -1000, -500, 0, 500, 1000, 1500, 2000];
 const SPECS = {
   art: { kind: 'art', lanes: 2, lw: 3.25, sw: 3.5, lim: 50, sh: 0.5, rank: 5 },
-  nat: { kind: 'nat', lanes: 3, lw: 3.5, sw: 3.5, lim: 60, sh: 0.75, rank: 6 },
+  nat: { kind: 'nat', lanes: 3, lw: 3.5, sw: 3.5, lim: 60, sh: 0.75, rank: 6, med: 0.75 },
   byp: { kind: 'byp', lanes: 2, lw: 3.5, sw: 0, lim: 60, sh: 1.25, rank: 5 },
   ring: { kind: 'ring', lanes: 1, lw: 3.5, sw: 2.0, lim: 50, sh: 0.5, rank: 3 },
-  shop: { kind: 'shop', lanes: 1, lw: 3.0, sw: 2.5, lim: 30, sh: 0.3, rank: 1.5, oneway: 1, fixedHw: 3.3 },
-  minor: { kind: 'minor', lanes: 1, lw: 3.0, sw: 0, lim: 40, sh: 0.5, rank: 1 },
+  shop: { kind: 'shop', lanes: 1, lw: 3.0, sw: 3.4, lim: 30, sh: 0.3, rank: 1.5, oneway: 1, fixedHw: 2.6 },
+  minor: { kind: 'minor', lanes: 1, lw: 2.75, sw: 0, lim: 30, sh: 0.25, rank: 1 },
   out: { kind: 'out', lanes: 1, lw: 3.25, sw: 0, lim: 50, sh: 0.75, rank: 2 },
-  mtn: { kind: 'mtn', lanes: 1, lw: 3.0, sw: 0, lim: 40, sh: 0.75, rank: 1 }
+  mtn: { kind: 'mtn', lanes: 1, lw: 2.75, sw: 0, lim: 40, sh: 0.5, rank: 1 }
 };
 export function mkSpec(kind, axis, c) {
   const s = { ...SPECS[kind], axis, c };
-  s.hw = s.fixedHw || s.lanes * s.lw + s.sh; s.ext = s.hw + s.sw;
+  s.hw = s.fixedHw || (s.med || 0) + s.lanes * s.lw + s.sh; s.ext = s.hw + s.sw;
   return s;
 }
 function coreKind(axis, c) {
@@ -33,7 +34,7 @@ function coreKind(axis, c) {
 export const RS = { ns: LINES.map(c => mkSpec(coreKind('ns', c), 'ns', c)), ew: LINES.map(c => mkSpec(coreKind('ew', c), 'ew', c)) };
 // バイパス（x=1000）の高架：国道(z=0)を立体交差でまたぐ
 export const BYP_X = 1000;
-export function bypY(z) { const f = clamp((290 - Math.abs(z)) / 150, 0, 1); return 9 * f * f * (3 - 2 * f); }
+export function bypY(z) { const f = clamp((295 - Math.abs(z)) / 200, 0, 1); return 9 * f * f * (3 - 2 * f); } // 最大勾配 6.75%（7%以下）
 
 // 街区の用途（中心市街地8x8）
 const DMAP = ['RRABSOAR', 'RHHOOOAR', 'RHHOPOAR', 'RAKCODDD', 'RFEUQDDD', 'RRARRAMI', 'RRRRRANI', 'RRARRRII'];
@@ -75,7 +76,7 @@ export class City {
     this.nodes = []; this.nmap = new Map(); this.edges = []; this.emap = new Map(); this.lots = []; this.aabbs = []; this.hash = new Map(); this.walls = []; this.whash = new Map();
     this.chunks = []; this.sigHeads = []; this.mm = { blds: [], lots: [], lanes: [], polys: [], water: [], green: [] };
     this.stats = { buildings: 0, houses: 0, parked: 0, lotsAI: 0 };
-    this.surfaces = []; this.tunnels = []; this.tramStops = []; this.loops = [];
+    this.surfaces = []; this.tunnels = []; this.tramStops = []; this.loops = []; this.driveways = []; this.dhash = new Map();
     for (let cz = 0; cz < NCZ; cz++) for (let cx = 0; cx < NCX; cx++) this.chunks.push({ cx, cz, x: CX0 + cx * CH + CH / 2, z: CZ0 + cz * CH + CH / 2, cmds: [], m: null });
     this.global = new GB(); this.globalDecal = new GB();
     this.buildNetwork();
@@ -91,10 +92,10 @@ export class City {
   }
   add(x, z, fn) { this.chunkAt(x, z).cmds.push(fn); }
   buildChunk(ch, R) {
-    const g = { s: new GB(), d1: new GB(), d2: new GB(), glow: new GB(), lines: new GB(), glass: new GB() };
+    const g = { s: new GB(), det: new GB(), d1: new GB(), d2: new GB(), glow: new GB(), lines: new GB(), sh: new GB(), pud: new GB() };
     for (const f of ch.cmds) f(g);
-    ch.m = { s: R.mesh(g.s.build()), d1: R.mesh(g.d1.build()), d2: R.mesh(g.d2.build()), glow: R.mesh(g.glow.build()), lines: R.mesh(g.lines.build(), R.gl.LINES) };
-    ch.tris = (g.s.count + g.d1.count + g.d2.count) / 3;
+    ch.m = { s: R.mesh(g.s.build()), det: R.mesh(g.det.build()), d1: R.mesh(g.d1.build()), d2: R.mesh(g.d2.build()), glow: R.mesh(g.glow.build()), lines: R.mesh(g.lines.build(), R.gl.LINES), sh: R.mesh(g.sh.build()), pud: R.mesh(g.pud.build()) };
+    ch.tris = (g.s.count + g.det.count + g.d1.count + g.d2.count) / 3;
   }
   freeChunk(ch, R) { if (!ch.m) return; for (const k in ch.m) R.free(ch.m[k]); ch.m = null; }
   // ---------- 衝突 ----------
@@ -112,6 +113,21 @@ export class City {
       const a = this.hash.get(gx * 10007 + gz); if (a) for (const b of a) out.add(b);
     }
     return out;
+  }
+  // 駐車場・車庫の出入口（歩道の切り下げ。街路樹・電柱などを置かない）
+  addDriveway(r) {
+    this.driveways.push(r);
+    for (let gx = Math.floor(r.x0 / 25); gx <= Math.floor(r.x1 / 25); gx++) for (let gz = Math.floor(r.z0 / 25); gz <= Math.floor(r.z1 / 25); gz++) { const k = gx * 10007 + gz; let a = this.dhash.get(k); if (!a) this.dhash.set(k, a = []); a.push(r); }
+    // 既に置いた柱類の当たり判定を取り除く
+    const hit = b => b.kind === 'p' && b.x1 > r.x0 && b.x0 < r.x1 && b.z1 > r.z0 && b.z0 < r.z1;
+    for (const b of this.query((r.x0 + r.x1) / 2, (r.z0 + r.z1) / 2, Math.max(r.x1 - r.x0, r.z1 - r.z0))) if (hit(b)) {
+      b.kind = 'x'; b.y1 = -100;
+    }
+  }
+  inDrive(x, z, m = 0.6) {
+    const a = this.dhash.get(Math.floor(x / 25) * 10007 + Math.floor(z / 25)); if (!a) return false;
+    for (const r of a) if (x > r.x0 - m && x < r.x1 + m && z > r.z0 - m && z < r.z1 + m) return true;
+    return false;
   }
   // 線分の壁（ガードレール・高架の防護壁など）
   addWall(x0, z0, x1, z1, y0, y1) {
@@ -228,7 +244,7 @@ export class City {
     const mustStop = B.ctrl === 'signal' ? 'signal' : (B.ctrl === 'stopNS' && axis === 'ns') || (B.ctrl === 'stopEW' && axis === 'ew') ? 'stop' : null;
     const e = {
       id: this.edges.length, from: A.id, to: B.id, d: pi.dirs[0], dEnd: pi.dirs[pi.dirs.length - 1], axis, sp, lanes: sp.lanes, lw: sp.lw, lim: sp.lim,
-      base: sp.oneway ? -sp.lanes * sp.lw / 2 : 0, x0: pts[0][0], z0: pts[0][1], len: pi.len, pts, cum: pi.cum, dirs: pi.dirs, nrm: pi.nrm, straight,
+      base: sp.oneway ? -sp.lanes * sp.lw / 2 : (sp.med || 0), x0: pts[0][0], z0: pts[0][1], len: pi.len, pts, cum: pi.cum, dirs: pi.dirs, nrm: pi.nrm, straight,
       ctrl: mustStop, lots: [], seg, tunnel: seg.tunnel ? (seg.fwd ? seg.tunnel.map(([a, b]) => [fi.len - b - trimA, fi.len - a - trimA]) : seg.tunnel.map(([a, b]) => [a - trimA, b - trimA])) : null
     };
     const cx = (A.x + B.x) / 2, cz = (A.z + B.z) / 2;
@@ -330,7 +346,21 @@ export class City {
             const a = Math.max(q0, p0 + crossA), b = Math.min(q1, p1 - crossB);
             if (b <= a) continue;
             const o = { c: [0.78, 0.77, 0.74], top: { lay: L.SIDEWALK, tw: 2 } };
-            if (axis === 'ns') g.s.box(Math.min(o0, o1), 0, a, Math.max(o0, o1), 0.12, b, o); else g.s.box(a, 0, Math.min(o0, o1), b, 0.12, Math.max(o0, o1), o);
+            const lo = Math.min(o0, o1), hi = Math.max(o0, o1), mo = (lo + hi) / 2;
+            // 出入口の部分は歩道を切り下げる
+            const cuts = [];
+            for (const r of this.driveways) {
+              const inO = axis === 'ns' ? (r.x1 > lo && r.x0 < hi) : (r.z1 > lo && r.z0 < hi);
+              if (!inO) continue;
+              const ra = axis === 'ns' ? r.z0 : r.x0, rb = axis === 'ns' ? r.z1 : r.x1;
+              if (rb > a && ra < b) cuts.push([Math.max(a, ra), Math.min(b, rb)]);
+            }
+            cuts.sort((u, v) => u[0] - v[0]);
+            let cur = a;
+            const piece = (u, v) => { if (v - u < 0.05) return; if (axis === 'ns') g.s.box(lo, 0, u, hi, 0.12, v, o); else g.s.box(u, 0, lo, v, 0.12, hi, o); };
+            const ramp = (u, v) => { if (axis === 'ns') g.d1.flat(lo, u, hi, v, 0, { c: [0.85, 0.84, 0.8], lay: L.ROOF }, 4); else g.d1.flat(u, lo, v, hi, 0, { c: [0.85, 0.84, 0.8], lay: L.ROOF }, 4); };
+            for (const [u, v] of cuts) { if (u > cur) piece(cur, u); ramp(Math.max(cur, u), v); cur = Math.max(cur, v); }
+            piece(cur, b); void mo;
           }
         });
       }
@@ -357,10 +387,17 @@ export class City {
         const first = q0 === 0, last = q1 >= e.len;
         this.add(mid[0], mid[2], g => {
           const d2 = g.d2;
-          if (fwd && !ow && sp.kind !== 'mtn') {
-            if (sp.kind === 'minor' || sp.kind === 'out') { for (let s = q0; s < q1; s += 10) W(d2, s, Math.min(s + 5, q1), -0.07, 0.07, WHITE); }
-            else W(d2, q0, q1, -0.08, 0.08, YEL);
+          // 中央線：日本の標準は白。黄色の実線は追越し禁止区間（交差点手前30m・橋の上）だけ。生活道路（minor）は中央線なし
+          if (fwd && !ow && sp.kind !== 'mtn' && sp.kind !== 'minor' && !sp.med) {
+            const yel = s => s < 30 || s > e.len - 30 || this.onBridge(e, s);
+            const dashed = e.lanes === 1;
+            for (let s = q0; s < q1; s += 5) {
+              const s1 = Math.min(s + 5, q1), Y = yel(s) || yel(s1);
+              if (dashed && !Y && Math.floor(s / 5) % 2 === 1) continue;
+              W(d2, s, s1, -0.08, 0.08, Y ? YEL : WHITE);
+            }
           }
+          if (fwd && sp.med && first) this.medianProps(g, e);
           for (let k = 1; k < e.lanes; k++) {
             const o = e.base + k * e.lw;
             for (let s = q0; s < Math.min(q1, e.len - 30); s += 13) W(d2, s, Math.min(s + 6, q1, e.len - 30), o - 0.07, o + 0.07, WHITE);
@@ -379,6 +416,7 @@ export class City {
         });
       }
       this.edgeProps(e, A, B);
+      if (fwd && sp.med) { const a = this.edgePt(e, 0, 0), b = this.edgePt(e, e.len, 0), hm = sp.med; this.addBox(Math.min(a[0], b[0]) - (e.axis === 'ns' ? hm : 0), Math.min(a[2], b[2]) - (e.axis === 'ew' ? hm : 0), Math.max(a[0], b[0]) + (e.axis === 'ns' ? hm : 0), Math.max(a[2], b[2]) + (e.axis === 'ew' ? hm : 0), 'w', -50, 0.6); }
     }
     // 信号機
     for (const n of this.nodes) {
@@ -407,72 +445,20 @@ export class City {
       } else if (n.ctrl === 'stopNS' || n.ctrl === 'stopEW') {
         const R = rng(n.id * 13), sx = R() < 0.5 ? 1 : -1, sz = R() < 0.5 ? 1 : -1;
         const mx = n.x + sx * (n.hx + 0.8), mz = n.z + sz * (n.hz + 0.8);
-        this.add(n.x, n.z, g => {
-          g.s.cyl(mx, 0, mz, 0.05, 3.0, 6, { c: [0.95, 0.45, 0.1] });
-          g.s.setXf(mx, 3.0, mz, Math.atan2(-sx, -sz));
-          const o = { c: [0.95, 0.45, 0.1] }, m = { c: [0.75, 0.8, 0.85] };
-          for (let k = 0; k < 10; k++) {
-            const a0 = k / 10 * Math.PI * 2, a1 = (k + 1) / 10 * Math.PI * 2;
-            g.s.tri([0, 0, 0.05], [Math.cos(a0) * 0.42, Math.sin(a0) * 0.42, 0.05], [Math.cos(a1) * 0.42, Math.sin(a1) * 0.42, 0.05], m);
-            g.s.tri([0, 0, 0.0], [Math.cos(a0) * 0.45, Math.sin(a0) * 0.45, 0.0], [Math.cos(a1) * 0.45, Math.sin(a1) * 0.45, 0.0], o);
-          }
-          g.s.clearXf();
-        });
+        this.addBox(mx - 0.1, mz - 0.1, mx + 0.1, mz + 0.1, 'p');
+        this.mirrors = (this.mirrors || 0) + 1;
+        this.add(n.x, n.z, g => this.curveMirror(g.det, mx, mz, Math.atan2(-sx, -sz), 0, R() < 0.4));
       }
     }
   }
-  // 道路わきの設備
-  edgeProps(e, A, B) {
-    const sp = e.sp, R = rng(e.id * 31 + 7), fwd = e.seg.fwd === e;
-    if (sp.kind === 'mtn' || !e.straight) { if (sp.kind === 'byp') this.bypassProps(e); return; }
-    const side = (s, o) => this.edgePt(e, s, sp.hw + o);
-    const nearByp = (p) => Math.abs(p[0] - BYP_X) < 25 && Math.abs(p[2]) < 300;
-    const cx = (A.x + B.x) / 2, cz = (A.z + B.z) / 2;
-    const items = [];
-    if (e.len > 40) items.push(['sp', 8]);
-    if (e.ctrl === 'stop') items.push(['stop', e.len - 1]);
-    if (sp.oneway) { items.push(['ow', 20]); }
-    if ((sp.kind === 'art' || sp.kind === 'nat') && e.len > 80 && B.ctrl === 'signal' && e.id % 3 === 0) items.push(['guide', e.len - 45]);
-    for (const [t, s] of items) {
-      const p = side(s, sp.sw > 0 ? 0.8 : 0.6);
-      this.add(p[0], p[2], g => {
-        if (t === 'sp') this.signPole(g.s, p[0], p[2], e.d, sp.lim === 30 ? L.SP30 : sp.lim === 40 ? L.SP40 : sp.lim === 60 ? L.SP60 : L.SP50, 0.6, 0.6, 2.2);
-        else if (t === 'stop') this.signPole(g.s, p[0], p[2], e.d, L.STOP, 0.8, 0.7, 2.0);
-        else if (t === 'guide') this.signPole(g.s, p[0], p[2], e.d, L.GUIDE, 2.6, 1.3, 3.2, 0);
-        else if (t === 'ow') this.signPole(g.s, p[0], p[2], [-e.d[0], -e.d[1]], L.ONEWAY, 0.9, 0.9, 2.3, 0);
-      });
-    }
-    if (sp.oneway) { // 逆走側の入口に車両進入禁止
-      const q = this.edgePt(e, e.len + 1.5, -sp.hw - 0.6);
-      this.add(q[0], q[2], g => this.signPole(g.s, q[0], q[2], [-e.d[0], -e.d[1]], L.NOENTRY, 0.6, 0.6, 2.2));
-    }
-    if (sp.kind === 'art' || sp.kind === 'nat') {
-      for (let s = 6; s < e.len - 4; s += 16) { const p = side(s, sp.sw - 1.0); if (nearByp(p)) continue; this.add(p[0], p[2], g => this.tree(g.s, p[0], p[2], rng(e.id * 7 + s))); this.addBox(p[0] - 0.25, p[2] - 0.25, p[0] + 0.25, p[2] + 0.25, 'p'); }
-      for (let s = 14; s < e.len; s += 32) { const p = side(s, 0.5); if (nearByp(p)) continue; this.add(p[0], p[2], g => this.streetLight(g, p[0], p[2], e.d, sp.hw * 0.4)); }
-    } else if (sp.kind === 'ring' || sp.kind === 'byp') {
-      if (fwd) for (let s = 20; s < e.len; s += 45) { const p = side(s, 0.6); this.add(p[0], p[2], g => this.streetLight(g, p[0], p[2], e.d, sp.hw * 0.5)); }
-    } else if (fwd) { // 電柱（片側）と電線
-      const spacing = 30; let prev = null;
-      for (let s = 4; s < e.len; s += spacing) {
-        const p = side(s, sp.sw > 0 ? sp.sw - 0.4 : 0.5), pr = prev;
-        const lamp = (s / spacing | 0) % (sp.kind === 'out' ? 4 : 2) === 0;
-        this.add(p[0], p[2], g => {
-          this.utilPole(g, p[0], p[2], e.d, lamp);
-          if (pr) for (const [ox, oy] of [[-0.6, 9.4], [0.6, 9.4], [0, 8.3]]) g.lines.line([pr[0] + e.d[1] * ox, oy, pr[2] - e.d[0] * ox], [p[0] + e.d[1] * ox, oy, p[2] - e.d[0] * ox], [0.1, 0.1, 0.1]);
-        });
-        this.addBox(p[0] - 0.2, p[2] - 0.2, p[0] + 0.2, p[2] + 0.2, 'p');
-        prev = p;
-      }
-    }
-    void R; void cx; void cz;
-  }
-  signPole(gb, x, z, d, lay, w, h, y, cut = 1) {
-    gb.cyl(x, 0, z, 0.04, y + h * 0.5, 6, { c: [0.7, 0.72, 0.72] });
-    const r = [-d[1], d[0]];
-    gb.quadN([x - r[0] * w / 2 - d[0] * 0.06, y, z - r[1] * w / 2 - d[1] * 0.06], [x + r[0] * w / 2 - d[0] * 0.06, y, z + r[1] * w / 2 - d[1] * 0.06],
-      [x + r[0] * w / 2 - d[0] * 0.06, y + h, z + r[1] * w / 2 - d[1] * 0.06], [x - r[0] * w / 2 - d[0] * 0.06, y + h, z - r[1] * w / 2 - d[1] * 0.06], [-d[0], 0, -d[1]], { c: [1, 1, 1], lay, mat: cut ? 17 : 0 });
-    gb.quadN([x - r[0] * w / 2 - d[0] * 0.04, y, z - r[1] * w / 2 - d[1] * 0.04], [x + r[0] * w / 2 - d[0] * 0.04, y, z + r[1] * w / 2 - d[1] * 0.04],
-      [x + r[0] * w / 2 - d[0] * 0.04, y + h, z + r[1] * w / 2 - d[1] * 0.04], [x - r[0] * w / 2 - d[0] * 0.04, y + h, z - r[1] * w / 2 - d[1] * 0.04], [d[0], 0, d[1]], { c: [0.6, 0.62, 0.62], lay: cut ? lay : 0, mat: cut ? 17 : 0 });
+  onBridge(e, s) { const p = this.edgePt(e, s, 0); return p[2] > 524 && p[2] < 606; }
+  // 国道の中央分離帯（植栽つきの縁石）
+  medianProps(g, e) {
+    const hm = e.sp.med;
+    g.s.quadN(this.edgePt(e, 0, -hm), this.edgePt(e, e.len, -hm), this.edgePt(e, e.len, hm), this.edgePt(e, 0, hm), [0, 1, 0], { c: [0.75, 0.74, 0.7] });
+    const a = this.edgePt(e, 0, 0), b = this.edgePt(e, e.len, 0), x0 = Math.min(a[0], b[0]) - (e.axis === 'ns' ? hm : 0), x1 = Math.max(a[0], b[0]) + (e.axis === 'ns' ? hm : 0), z0 = Math.min(a[2], b[2]) - (e.axis === 'ew' ? hm : 0), z1 = Math.max(a[2], b[2]) + (e.axis === 'ew' ? hm : 0);
+    g.s.box(x0, 0, z0, x1, 0.2, z1, { c: [0.72, 0.72, 0.7], top: { lay: L.GRASS, tw: 3 } });
+    for (let s = 4; s < e.len - 2; s += 6) { const p = this.edgePt(e, s, 0); g.s.cbox(p[0], 0.5, p[2], 1.0, 0.6, 1.0, { c: [0.45, 0.62, 0.35], lay: L.TREE }); }
   }
   tree(gb, x, z, R) {
     const s = 0.8 + R() * 0.5;
@@ -485,27 +471,6 @@ export class City {
       const a = pts[k], b = pts[(k + 1) % 4];
       gb.tri([x + a[0], y + t * 0.35, z + a[1]], [x + b[0], y + t * 0.35, z + b[1]], [x, y + t, z], o, [0, 1], [1, 1], [0.5, 0], [x, y + t * 0.4, z]);
       gb.tri([x + a[0], y + t * 0.35, z + a[1]], [x + b[0], y + t * 0.35, z + b[1]], [x, y, z], o, [0, 0], [1, 0], [0.5, 1], [x, y + t * 0.4, z]);
-    }
-  }
-  streetLight(g, x, z, d, arm) {
-    const l = [d[1], -d[0]]; // 歩道→車道方向は -left
-    const hx = x - l[0] * arm, hz = z - l[1] * arm;
-    g.s.cyl(x, 0, z, 0.09, 8, 6, { c: [0.6, 0.62, 0.62] }, false);
-    g.s.beam([x, 7.9, z], [hx, 8.1, hz], 0.05, { c: [0.6, 0.62, 0.62] });
-    g.s.cbox(hx, 8.0, hz, 0.5, 0.14, 0.3, { c: [1, 0.92, 0.75], mat: 8 });
-    g.glow.flat(hx - 7, hz - 7, hx + 7, hz + 7, 0.06, { c: [1, 0.85, 0.62], mat: 5, lay: L.GLOW });
-    this.addBox(x - 0.15, z - 0.15, x + 0.15, z + 0.15, 'p');
-  }
-  utilPole(g, x, z, d, lamp) {
-    g.s.cyl(x, 0, z, 0.17, 10, 6, { c: [0.66, 0.66, 0.63] });
-    const l = [d[1], -d[0]];
-    g.s.beam([x - l[0] * 0.8, 9.4, z - l[1] * 0.8], [x + l[0] * 0.8, 9.4, z + l[1] * 0.8], 0.06, { c: [0.4, 0.4, 0.4] });
-    if ((Math.abs(x * 3 + z) | 0) % 3 === 0) g.s.cyl(x + d[0] * 0.35, 6.5, z + d[1] * 0.35, 0.3, 0.9, 6, { c: [0.55, 0.57, 0.56] });
-    if (lamp) {
-      const hx = x - l[0] * 1.1, hz = z - l[1] * 1.1;
-      g.s.beam([x, 5.5, z], [hx, 5.7, hz], 0.03, { c: [0.6, 0.6, 0.6] });
-      g.s.cbox(hx, 5.62, hz, 0.35, 0.1, 0.18, { c: [0.95, 0.95, 1], mat: 8 });
-      g.glow.flat(hx - 4.5, hz - 4.5, hx + 4.5, hz + 4.5, 0.06, { c: [0.75, 0.8, 0.9], mat: 5, lay: L.GLOW });
     }
   }
   // ---------- 街区 ----------
@@ -566,7 +531,8 @@ export class City {
       if (x < 0.7 || opt.housesOnly) this.house(pr, side, R);
       else if (x < 0.82) this.apartment(pr, side, R);
       else if (x < 0.89) this.tsukiParking(pr, side, R);
-      else if (x < 0.94) this.add((pr.x0 + pr.x1) / 2, (pr.z0 + pr.z1) / 2, g => { g.s.flat(pr.x0 + 1, pr.z0 + 1, pr.x1 - 1, pr.z1 - 1, 0.03, { c: [0.75, 0.62, 0.45], lay: L.FIELD }, 3); });
+      else if (x < 0.94 && R() < 0.2) this.siteWork(pr, side, R); // 建築中・解体中
+      else if (x < 0.94) { const f = this.frame(pr, side), sp = f.W(1.2, 1.2), urichi = R() < 0.5; if (urichi) this.addBox(sp[0] - 0.15, sp[1] - 0.15, sp[0] + 0.15, sp[1] + 0.15, 'p'); this.add((pr.x0 + pr.x1) / 2, (pr.z0 + pr.z1) / 2, g => { g.s.flat(pr.x0 + 1, pr.z0 + 1, pr.x1 - 1, pr.z1 - 1, 0.03, { c: [0.62, 0.66, 0.45], lay: L.FIELD }, 3); if (urichi) this.signPole(g.det, sp[0], sp[1], f.inv, L.SG_URICHI, 1.2, 0.6, 1.0, 0); }); }
       else this.smallShop(pr, side, R);
     }
   }
@@ -577,28 +543,45 @@ export class City {
     const b = this.frect(f, u0, u1, w0, w1);
     if (this.railBlock(this.frect(f, 0, f.F, 0, f.D))) return;
     const floors = R() < 0.82 ? 2 : 1, H = floors * 2.8, wc = PAL_HOUSE[R() * PAL_HOUSE.length | 0], rc = PAL_ROOF[R() * PAL_ROOF.length | 0];
-    const flat = R() < 0.18, car = set > 4 && R() < (this.carRate ?? 0.6), carM = car ? pickModel(R) : null, carC = car ? pickColor(carM, R) : null;
+    const vacant = R() < 0.05; if (vacant) this.stats.vacant = (this.stats.vacant || 0) + 1;
+    const rr = R(), roofT = rr < 0.14 ? 'flat' : rr < 0.32 ? 'metal' : rr < 0.42 ? 'shed' : 'gable';
+    const car = !vacant && set > 4 && R() < (this.carRate ?? 0.6), carM = car ? pickModel(R) : null, carC = car ? pickColor(carM, R) : null;
     const dp = f.W(f.F * 0.3, w0 - 0.02), dirIn = f.inv, wallSplit = f.F * 0.5;
-    const carP = f.W(f.F * 0.5, set / 2), carYaw = Math.atan2(dirIn[0], dirIn[1]);
+    const carP = f.W(f.F * 0.5, set / 2), carYaw = Math.atan2(dirIn[0], dirIn[1]) + (R() < 0.5 ? Math.PI : 0); // 半数はバック駐車
+    const carport = car && R() < 0.35, ac = R() < 0.85, laundry = !vacant && floors === 2 && R() < 0.35, lpg = R() < 0.4, kero = R() < 0.3, bikeN = vacant ? 0 : R() < 0.45 ? 1 + (R() * 2 | 0) : 0;
+    const fenceT = R() < 0.6 ? 0 : R() < 0.5 ? 1 : 2; // 0=ブロック塀 1=生垣 2=アルミフェンス
+    const rcM = [[0.55, 0.3, 0.25], [0.3, 0.38, 0.5], [0.35, 0.45, 0.35], [0.42, 0.42, 0.44]][R() * 4 | 0];
+    const side2 = f.W(f.F - 0.6, w0 + depth * 0.6), side3 = f.W(0.5, w0 + depth * 0.4), back = f.W(f.F * 0.5, w1 + 0.4);
     this.addBox(b.x0, b.z0, b.x1, b.z1);
-    if (car) this.addCarBox(carP[0], carP[1], carYaw, carM);
-    this.stats.houses++; this.mm.blds.push(b);
+    if (car) { this.addCarBox(carP[0], carP[1], carYaw, carM); this.addDriveway(this.frect(f, f.F * 0.5 - 1.8, f.F * 0.5 + 1.8, -4.3, 0.2)); }
+    this.stats.houses++; b.h = H + 1.5; this.mm.blds.push(b);
     const wallA = f.W(0.2, 0.25), wallB = f.W(wallSplit - 1.8, 0.4), wallC = f.W(wallSplit + 1.8, 0.25), wallD = f.W(f.F - 0.2, 0.4);
     const hasWall = R() < 0.7;
     if (hasWall) { this.addBox(wallA[0], wallA[1], wallB[0], wallB[1], 'w'); this.addBox(wallC[0], wallC[1], wallD[0], wallD[1], 'w'); }
     this.add((b.x0 + b.x1) / 2, (b.z0 + b.z1) / 2, g => {
-      g.s.box(b.x0, 0, b.z0, b.x1, H, b.z1, { c: wc, mat: 3, side: { lay: L.HOUSE, tw: 7, th: 5.6 }, top: { lay: L.ROOF, tw: 6 } });
-      if (flat) g.s.box(b.x0 - 0.2, H, b.z0 - 0.2, b.x1 + 0.2, H + 0.3, b.z1 + 0.2, { c: [0.7, 0.7, 0.68] });
-      else g.s.gable(b.x0, b.z0, b.x1, b.z1, H, 2.0, { c: rc, lay: L.KAWARA, tw: 2, gc: wc });
+      const wcv = vacant ? wc.map(v => v * 0.8) : wc;
+      g.s.box(b.x0, 0, b.z0, b.x1, H, b.z1, { c: wcv, mat: vacant ? 0 : 3, side: { lay: vacant ? L.HOUSE_DARK : L.HOUSE, tw: 7, th: 5.6 }, top: { lay: L.ROOF, tw: 6 } });
+      if (roofT === 'flat') g.s.box(b.x0 - 0.2, H, b.z0 - 0.2, b.x1 + 0.2, H + 0.3, b.z1 + 0.2, { c: [0.7, 0.7, 0.68] });
+      else if (roofT === 'metal') g.s.gable(b.x0, b.z0, b.x1, b.z1, H, 1.5, { c: rcM, lay: L.METAL, tw: 2, gc: wcv });
+      else if (roofT === 'shed') { const lo = f.W(0, w0), hi = f.W(0, w1); const ax = Math.abs(lo[0] - hi[0]) > 0.1; const y0 = H, y1 = H + 1.4; if (ax) { const xa = lo[0], xb = hi[0]; g.s.quadN([xa, y0, b.z0], [xa, y0, b.z1], [xb, y1, b.z1], [xb, y1, b.z0], [0, 1, 0], { c: rcM, lay: L.METAL }); } else { const za = lo[1], zb = hi[1]; g.s.quadN([b.x0, y0, za], [b.x1, y0, za], [b.x1, y1, zb], [b.x0, y1, zb], [0, 1, 0], { c: rcM, lay: L.METAL }); } }
+      else g.s.gable(b.x0, b.z0, b.x1, b.z1, H, 2.0, { c: vacant ? rc.map(v => v * 0.85) : rc, lay: L.KAWARA, tw: 2, gc: wcv });
+      // 室外機・プロパンガス・灯油タンク・物干し・自転車・カーポート
+      if (ac) g.det.cbox(side2[0], 0.35, side2[1], 0.8, 0.6, 0.8, { c: [0.88, 0.88, 0.85] });
+      if (lpg) for (const k of [0, 1]) { const p = f.W(0.45, w0 + 1 + k * 0.45); g.det.cyl(p[0] - dirIn[1] * 0.2, 0, p[1] + dirIn[0] * 0.2, 0.19, 1.3, 6, { c: [0.85, 0.85, 0.82] }); }
+      if (kero) g.det.cbox(back[0], 0.6, back[1], 0.9, 1.2, 0.6, { c: [0.55, 0.6, 0.55] });
+      if (laundry) { const a = f.W(f.F * 0.5, w0 - 0.7), c2 = f.W(f.F - 2, w0 - 0.7); g.det.quadN([a[0], 3.1, a[1]], [c2[0], 3.1, c2[1]], [c2[0], 3.8, c2[1]], [a[0], 3.8, a[1]], [-dirIn[0], 0, -dirIn[1]], { c: [1, 1, 1], lay: L.LAUNDRY, mat: 17 }); }
+      for (let k = 0; k < bikeN; k++) { const p = f.W(f.F * 0.18 + k * 0.6, w0 - 1.2); this.bike(g.det, p[0], p[1], Math.atan2(dirIn[0], dirIn[1]), k + (b.x0 | 0)); }
+      if (carport) { const c0 = f.W(f.F * 0.5 - 1.6, 0.6), c1 = f.W(f.F * 0.5 + 1.6, set - 0.2); for (const p of [c0, c1, f.W(f.F * 0.5 - 1.6, set - 0.2), f.W(f.F * 0.5 + 1.6, 0.6)]) g.det.cyl(p[0], 0, p[1], 0.05, 2.3, 4, { c: [0.75, 0.75, 0.72] }); g.det.box(Math.min(c0[0], c1[0]), 2.3, Math.min(c0[1], c1[1]), Math.max(c0[0], c1[0]), 2.38, Math.max(c0[1], c1[1]), { c: [0.6, 0.66, 0.68] }); }
       // 玄関
       const n = [-dirIn[0], 0, -dirIn[1]], a = f.W(f.F * 0.3 - 0.5, w0), c = f.W(f.F * 0.3 + 0.5, w0);
       g.s.panel(a[0], a[1], c[0], c[1], 0, 2.1, 0.03, n, { c: [0.35, 0.25, 0.18] });
       void dp;
-      if (hasWall) { // ブロック塀
-        g.s.box(Math.min(wallA[0], wallB[0]), 0, Math.min(wallA[1], wallB[1]), Math.max(wallA[0], wallB[0]), 1.2, Math.max(wallA[1], wallB[1]), { c: [0.72, 0.72, 0.7] });
-        g.s.box(Math.min(wallC[0], wallD[0]), 0, Math.min(wallC[1], wallD[1]), Math.max(wallC[0], wallD[0]), 1.2, Math.max(wallC[1], wallD[1]), { c: [0.72, 0.72, 0.7] });
+      if (hasWall) { // 塀：ブロック塀／生垣／アルミフェンス
+        const fo = fenceT === 0 ? { c: [0.72, 0.72, 0.7] } : fenceT === 1 ? { c: [0.42, 0.6, 0.35], lay: L.TREE } : { c: [0.55, 0.5, 0.42] }, fh = fenceT === 1 ? 1.4 : fenceT === 2 ? 1.0 : 1.2;
+        g.s.box(Math.min(wallA[0], wallB[0]), 0, Math.min(wallA[1], wallB[1]), Math.max(wallA[0], wallB[0]), fh, Math.max(wallA[1], wallB[1]), fo);
+        g.s.box(Math.min(wallC[0], wallD[0]), 0, Math.min(wallC[1], wallD[1]), Math.max(wallC[0], wallD[0]), fh, Math.max(wallC[1], wallD[1]), fo);
       }
-      if (car) this.bakeCar(g.s, carM, carC, carP[0], carP[1], carYaw);
+      if (car) this.bakeCar(g.det, carM, carC, carP[0], carP[1], carYaw);
       if (R && floors === 2 && (b.x1 - b.x0) > 7) { // ベランダ
         const v0 = f.W(f.F * 0.45, w0 - 0.9), v1 = f.W(f.F - 1.6, w0);
         g.s.box(Math.min(v0[0], v1[0]), 2.8, Math.min(v0[1], v1[1]), Math.max(v0[0], v1[0]), 3.8, Math.max(v0[1], v1[1]), { c: [0.85, 0.85, 0.83] });
@@ -610,7 +593,7 @@ export class City {
     const b = this.frect(f, 1, f.F - 1, 6, Math.min(D - 1, 16));
     if (b.x1 - b.x0 < 4 || b.z1 - b.z0 < 4 || this.railBlock(this.frect(f, 0, f.F, 0, f.D))) return;
     const floors = 2 + (R() < 0.4 ? 1 : 0), fh = 2.9, H = floors * fh, c = PAL_WALL[R() * PAL_WALL.length | 0];
-    this.addBox(b.x0, b.z0, b.x1, b.z1); this.stats.buildings++; this.mm.blds.push(b);
+    this.addBox(b.x0, b.z0, b.x1, b.z1); this.stats.buildings++; b.h = H; this.mm.blds.push(b);
     const cars = [];
     for (let k = 0; k < Math.floor((f.F - 2) / 2.6); k++) if (R() < 0.6) { const m = pickModel(R); cars.push([f.W(1.5 + k * 2.6, 2.8), m, pickColor(m, R)]); }
     const yaw = Math.atan2(f.inv[0], f.inv[1]);
@@ -620,7 +603,7 @@ export class City {
       g.s.box(b.x0 - 0.3, H, b.z0 - 0.3, b.x1 + 0.3, H + 0.35, b.z1 + 0.3, { c: [0.6, 0.6, 0.6] });
       const lr = this.frect(f, 0.5, f.F - 0.5, 0, 5.4);
       g.d1.flat(lr.x0, lr.z0, lr.x1, lr.z1, 0, { c: [0.9, 0.9, 0.9], mat: 7, lay: L.ASPHALT }, 8);
-      for (const [p, m, cc] of cars) this.bakeCar(g.s, m, cc, p[0], p[1], yaw);
+      for (const [p, m, cc] of cars) this.bakeCar(g.det, m, cc, p[0], p[1], yaw);
     });
   }
   tsukiParking(pr, side, R) {
@@ -630,15 +613,18 @@ export class City {
   }
   smallShop(pr, side, R) {
     const f = this.frame(pr, side);
-    const signs = [L.SG_SHOP1, L.SG_SHOP2, L.SG_SHOP3, L.SG_SHOP4, L.SG_SHOP5, L.SG_SHOP6, L.SG_SHOP7, L.SG_RAMEN, L.SG_CONBINI2];
-    this.building(f, 1, f.F - 1, 1.5, Math.min(f.D - 1, 12), { floors: 1, fh: 2.9, lay: L.HOUSE, tw: 7, th: 5.6, glay: L.SHOP, fh0: 3.4, col: PAL_HOUSE[R() * 10 | 0], sign: signs[R() * signs.length | 0], R });
+    const signs = [L.SG_SHOP1, L.SG_SHOP2, L.SG_SHOP3, L.SG_SHOP4, L.SG_SHOP5, L.SG_SHOP6, L.SG_SHOP7, L.SG_RAMEN];
+    const closed = R() < 0.3; this.stats.shutters = (this.stats.shutters || 0) + (closed ? 1 : 0);
+    this.building(f, 1, f.F - 1, 1.5, Math.min(f.D - 1, 12), { floors: 1, fh: 2.9, lay: L.HOUSE, tw: 7, th: 5.6, glay: closed ? L.SHUTTER : L.SHOP, fh0: 3.4, col: PAL_HOUSE[R() * 10 | 0], sign: closed ? L.SG_KASHI : signs[R() * signs.length | 0], R });
+    if (!closed && R() < 0.5) { const p = f.W(0.7, 0.8); this.add(p[0], p[1], g => this.nobori(g.det, p[0], p[1], Math.atan2(f.inv[0], f.inv[1]))); }
+    if (!closed && R() < 0.35) { const p = f.W(f.F - 1.4, 1.0); this.addBox(p[0] - 0.5, p[1] - 0.5, p[0] + 0.5, p[1] + 0.5, 'p'); this.stats.vending = (this.stats.vending || 0) + 1; this.add(p[0], p[1], g => this.vending(g, p[0], p[1], Math.atan2(-f.inv[0], -f.inv[1]), (p[0] * 3 + p[1]) & 3)); }
   }
   // 汎用建物（frame座標で配置、正面は道路側）
   building(f, u0, u1, w0, w1, o) {
     const b = this.frect(f, u0, u1, w0, w1), R = o.R;
     if (b.x1 - b.x0 < 2 || b.z1 - b.z0 < 2 || this.railBlock(b)) return null;
     const fh0 = o.fh0 ?? o.fh, H = fh0 + o.floors * o.fh;
-    this.addBox(b.x0, b.z0, b.x1, b.z1); this.stats.buildings++; this.mm.blds.push(b);
+    this.addBox(b.x0, b.z0, b.x1, b.z1); this.stats.buildings++; b.h = H; this.mm.blds.push(b);
     const n = [-f.inv[0], 0, -f.inv[1]];
     const items = [];
     if (o.roofItems !== false && H > 8) for (let k = 0; k < 3 + (R() * 4 | 0); k++) items.push([b.x0 + 1.5 + R() * (b.x1 - b.x0 - 3), b.z0 + 1.5 + R() * (b.z1 - b.z0 - 3), 0.8 + R() * 1.5, 0.6 + R() * 1.2, R() < 0.25]);
@@ -696,10 +682,12 @@ export class City {
         slots.push({ x: p[0], z: p[1], yaw, u, row: r, band, occ: null });
       }
     }
-    const L0 = { id: this.lots.length, f, slots, entU, w0, aisle: r => w0 + 3 + r * 11, rect: lr, edge: null, sE: 0 };
+    this.addDriveway(this.frect(f, entU - 4.5, entU + 4.5, w0 - 4.3, w0 + 0.2));
+    const L0 = { id: this.lots.length, f, slots, entU, w0, aisle: r => w0 + 3 + r * 11, rect: lr, edge: null, sE: 0, kind: opt.kind || (opt.sign === L.SG_CONBINI ? 'conv' : (opt.fill ?? 0.35) >= 0.5 ? 'big' : 'shop') };
     // 静的駐車
     const baked = [];
-    for (const s of slots) if (R() < (opt.fill ?? 0.35)) { s.occ = 'static'; const m = pickModel(R); baked.push([s, m, pickColor(m, R)]); this.addCarBox(s.x, s.z, s.yaw, m); }
+    // 静的駐車：日本の駐車場らしく 65〜75% は後ろ向き（バック駐車）
+    for (const s of slots) if (R() < (opt.fill ?? 0.35)) { s.occ = 'static'; const m = pickModel(R), yy = R() < 0.7 ? s.yaw + Math.PI : s.yaw; baked.push([s, m, pickColor(m, R), yy]); this.addCarBox(s.x, s.z, yy, m); this.stats.backIn = (this.stats.backIn || 0) + (yy !== s.yaw ? 1 : 0); }
     this.stats.parked += baked.length;
     this.mm.lots.push(lr);
     this.add((lr.x0 + lr.x1) / 2, (lr.z0 + lr.z1) / 2, g => {
@@ -711,8 +699,8 @@ export class City {
         }
         const cs = f.W(s.u, s.band + 4.6); g.s.cbox(cs[0], 0.07, cs[1], f.side === 'n' || f.side === 's' ? 1.4 : 0.2, 0.14, f.side === 'n' || f.side === 's' ? 0.2 : 1.4, { c: [0.7, 0.7, 0.68] });
       }
-      for (const [s, m, c] of baked) this.bakeCar(g.s, m, c, s.x, s.z, s.yaw);
-      if (opt.sign != null) { const p = f.W(u0 + 1, w0 + 0.5); this.poleSign(g.s, p[0], p[1], f, opt.sign, opt.signH || 4.5); }
+      for (const [s, m, c, yy] of baked) this.bakeCar(g.det, m, c, s.x, s.z, yy);
+      if (opt.sign != null) { const p = f.W(u0 + 1, w0 + 0.5); this.poleSign(g.det, p[0], p[1], f, opt.sign, opt.signH || 4.5); }
     });
     // NPC用：対応する道路エッジ（駐車場が進行方向の左側になる向き）
     if ((opt.ai || opt.bx != null) && w0 < 3) {
@@ -731,16 +719,58 @@ export class City {
   }
   staticLot(f, lr, R, sign, fill) {
     if (this.railBlock(lr)) return;
+    this.addDriveway(this.frect(f, f.F / 2 - 3.5, f.F / 2 + 3.5, -4.3, 0.2));
     const cars = [], yaw = Math.atan2(f.inv[0], f.inv[1]);
     const n = Math.floor((f.F - 1) / 2.6);
-    for (let k = 0; k < n; k++) if (R() < fill) { const m = pickModel(R); const p = f.W(1.8 + k * 2.6, Math.min(f.D, 18) - 3); cars.push([p, m, pickColor(m, R)]); this.addCarBox(p[0], p[1], yaw, m); }
+    for (let k = 0; k < n; k++) if (R() < fill) { const m = pickModel(R); const p = f.W(1.8 + k * 2.6, Math.min(f.D, 18) - 3), yy = R() < 0.8 ? yaw + Math.PI : yaw; cars.push([p, m, pickColor(m, R), yy]); this.addCarBox(p[0], p[1], yy, m); }
     this.stats.parked += cars.length; this.mm.lots.push(lr);
     this.add((lr.x0 + lr.x1) / 2, (lr.z0 + lr.z1) / 2, g => {
       g.d1.flat(lr.x0, lr.z0, lr.x1, lr.z1, 0, { c: [0.85, 0.85, 0.85], mat: 7, lay: L.ASPHALT }, 8);
       for (let k = 0; k <= n; k++) { const a = f.W(0.5 + k * 2.6 - 0.05, Math.min(f.D, 18) - 5.5), b = f.W(0.5 + k * 2.6 + 0.05, Math.min(f.D, 18) - 0.5); g.d2.flat(Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[0], b[0]), Math.max(a[1], b[1]), 0, { c: WHITE }); }
-      for (const [p, m, c] of cars) this.bakeCar(g.s, m, c, p[0], p[1], yaw);
-      if (sign != null) { const p = f.W(0.6, 0.4); this.poleSign(g.s, p[0], p[1], f, sign, 2.6); }
+      for (const [p, m, c, yy] of cars) this.bakeCar(g.det, m, c, p[0], p[1], yy);
+      if (sign != null) { const p = f.W(0.6, 0.4); this.poleSign(g.det, p[0], p[1], f, sign, 2.6); }
     });
+  }
+  // 建築中の家（足場と養生シート）／解体中（がれきと仮囲い）
+  siteWork(pr, side, R) {
+    const f = this.frame(pr, side), b = this.frect(f, 1.5, f.F - 1.5, 4, Math.min(f.D - 1, 13)), build = R() < 0.6;
+    if (b.x1 - b.x0 < 5 || b.z1 - b.z0 < 4 || this.railBlock(b)) return;
+    this.addBox(b.x0, b.z0, b.x1, b.z1); this.stats[build ? 'building' + 'Site' : 'demolish'] = (this.stats[build ? 'buildingSite' : 'demolish'] || 0) + 1;
+    const sg = f.W(1, 1.0);
+    this.add((b.x0 + b.x1) / 2, (b.z0 + b.z1) / 2, g => {
+      if (build) {
+        g.s.box(b.x0, 0, b.z0, b.x1, 0.4, b.z1, { c: [0.75, 0.75, 0.72] });
+        for (let x = b.x0; x <= b.x1 + 0.01; x += (b.x1 - b.x0) / 3) for (const z of [b.z0, b.z1]) g.det.cyl(x, 0.4, z, 0.06, 5.6, 4, { c: [0.75, 0.62, 0.45] });
+        for (const y of [2.9, 5.6]) g.det.box(b.x0, y, b.z0, b.x1, y + 0.15, b.z1, { c: [0.72, 0.6, 0.45] });
+        g.s.gable(b.x0, b.z0, b.x1, b.z1, 5.75, 1.8, { c: [0.7, 0.58, 0.42], lay: L.METAL, tw: 2 });
+        g.det.box(b.x0 - 0.8, 0, b.z0 - 0.8, b.x1 + 0.8, 6.2, b.z0 - 0.7, { c: [0.85, 0.88, 0.9] }); // 養生シート
+        g.det.box(b.x0 - 0.8, 0, b.z1 + 0.7, b.x1 + 0.8, 6.2, b.z1 + 0.8, { c: [0.85, 0.88, 0.9] });
+      } else {
+        g.d1.flat(b.x0, b.z0, b.x1, b.z1, 0.03, { c: [0.6, 0.55, 0.48], lay: L.FIELD }, 3);
+        for (let k = 0; k < 9; k++) { const x = b.x0 + R() * (b.x1 - b.x0), z = b.z0 + R() * (b.z1 - b.z0); g.det.cbox(x, 0.3, z, 1 + R() * 1.6, 0.6 + R() * 0.8, 1 + R() * 1.4, { c: [0.55 + R() * 0.2, 0.5, 0.45] }); }
+        g.det.box(b.x0 - 0.5, 0, b.z0 - 0.6, b.x1 + 0.5, 2.0, b.z0 - 0.5, { c: [0.85, 0.85, 0.8] }); // 仮囲い
+      }
+    });
+    this.add(sg[0], sg[1], g => this.signPole(g.det, sg[0], sg[1], f.inv, L.SG_KOJI, 1.4, 0.35, 0.9, 0));
+  }
+  // ガソリンスタンド（キャノピー・計量機・事務所・ポール看板）
+  gasStation(f, u0, u1, R, sign) {
+      const c0 = f.W(u0 + 6, 5), c1 = f.W(u1 - 6, 17);
+      const cr = { x0: Math.min(c0[0], c1[0]), x1: Math.max(c0[0], c1[0]), z0: Math.min(c0[1], c1[1]), z1: Math.max(c0[1], c1[1]) };
+      const lr = this.frect(f, u0 + 1, u1 - 1, 0, 24);
+      this.mm.lots.push(lr);
+      this.add((cr.x0 + cr.x1) / 2, (cr.z0 + cr.z1) / 2, g => {
+        g.d1.flat(lr.x0, lr.z0, lr.x1, lr.z1, 0, { c: [0.9, 0.9, 0.88], mat: 7, lay: L.ASPHALT }, 8);
+        g.s.box(cr.x0, 5.2, cr.z0, cr.x1, 6.2, cr.z1, { c: [0.95, 0.95, 0.95], mat: 8 });
+        for (const t of [0.25, 0.75]) for (const q of [0.3, 0.7]) { const p = [cr.x0 + (cr.x1 - cr.x0) * t, cr.z0 + (cr.z1 - cr.z0) * q]; g.s.cbox(p[0], 2.6, p[1], 0.4, 5.2, 0.4, { c: [0.9, 0.9, 0.9] }); g.s.cbox(p[0] + 0.8, 0.8, p[1], 0.7, 1.6, 0.5, { c: [0.1, 0.35, 0.75] }); }
+        const n = [-f.inv[0], 0, -f.inv[1]], a = f.W(u0 + 7, 5), b = f.W(u1 - 7, 5);
+        g.s.panel(a[0], a[1], b[0], b[1], 5.25, 6.15, 0.05, n, { c: [1, 1, 1], mat: 16, lay: sign });
+        g.glow.flat(cr.x0, cr.z0, cr.x1, cr.z1, 0.07, { c: [0.9, 0.9, 1.0], mat: 5, lay: L.GLOW });
+      });
+      for (const t of [0.25, 0.75]) for (const q of [0.3, 0.7]) { const p = [cr.x0 + (cr.x1 - cr.x0) * t, cr.z0 + (cr.z1 - cr.z0) * q]; this.addBox(p[0] - 0.3, p[1] - 0.3, p[0] + 1.2, p[1] + 0.3, 'p'); }
+      this.building(f, u0 + 6, u1 - 6, 26, 36, { floors: 1, fh: 3.6, lay: L.SHOP, tw: 6, th: 3.6, col: [0.92, 0.92, 0.92], R, roofItems: false });
+      const pp = f.W(u0 + 1.5, 1.2); this.add(pp[0], pp[1], g => this.poleSign(g.det, pp[0], pp[1], f, sign, 6.5));
+    this.stats.gas = (this.stats.gas || 0) + 1;
   }
   poleSign(gb, x, z, f, lay, h) {
     gb.cyl(x, 0, z, 0.12, h, 6, { c: [0.6, 0.6, 0.6] });
@@ -758,7 +788,10 @@ export class City {
     const c = Math.abs(Math.cos(yaw)) > 0.5, hl = m.L / 2, hw = m.W / 2;
     this.addBox(x - (c ? hw : hl), z - (c ? hl : hw), x + (c ? hw : hl), z + (c ? hl : hw), 'c');
   }
-  bakeCar(gb, m, c, x, z, yaw, y = 0) { gb.setXf(x, y, z, yaw); buildCar(m, gb, { paint: c.rgb, lod: 1 }); gb.clearXf(); }
+  bakeCar(gb, m, c, x, z, yaw, y = 0) {
+    const cls = plateClass(m), i = (Math.abs(x * 13.7 + z * 7.3) | 0) % (8 * (PLATES[cls] || 1));
+    gb.setXf(x, y, z, yaw); buildHull(m, gb, { paint: c.rgb, lod: 2, plateUV: plateUV(cls, i) }); gb.clearXf();
+  }
 
   genApt(B) {
     const R = B.R, mx = (B.x0 + B.x1) / 2;
@@ -795,7 +828,7 @@ export class City {
     }
     // 中央：中庭・駐車場
     const r = { x0: B.x0 + cw, x1: B.x0 + 2 * cw, z0: B.z0 + cd, z1: B.z0 + 2 * cd };
-    this.add((r.x0 + r.x1) / 2, (r.z0 + r.z1) / 2, g => { for (let k = 0; k < 4; k++) this.tree(g.s, r.x0 + 6 + k * (cw - 12) / 3, (r.z0 + r.z1) / 2, rng(k + B.bx)); });
+    this.add((r.x0 + r.x1) / 2, (r.z0 + r.z1) / 2, g => { for (let k = 0; k < 4; k++) this.tree(g.det, r.x0 + 6 + k * (cw - 12) / 3, (r.z0 + r.z1) / 2, rng(k + B.bx)); });
   }
   genShotengai(B, side) {
     const R = B.R, f = this.frame(B, side);
@@ -850,10 +883,10 @@ export class City {
       g.s.cyl(c[0], 0.25, c[1], RI - 0.4, 0.02, 24, { c: [0.45, 0.65, 0.35], lay: L.GRASS });
       g.s.cyl(c[0], 0, c[1], 0.15, 5.5, 8, { c: [0.3, 0.3, 0.3] }); // 時計塔
       g.s.cbox(c[0], 5.9, c[1], 0.9, 0.9, 0.9, { c: [0.95, 0.95, 0.92] });
-      for (let k = 0; k < 4; k++) this.tree(g.s, c[0] + Math.cos(k * 1.57 + 0.6) * 3.6, c[1] + Math.sin(k * 1.57 + 0.6) * 3.6, rng(k + 3));
+      for (let k = 0; k < 4; k++) this.tree(g.det, c[0] + Math.cos(k * 1.57 + 0.6) * 3.6, c[1] + Math.sin(k * 1.57 + 0.6) * 3.6, rng(k + 3));
       // タクシー乗り場の標識・上屋
       const t = f.W(cu - 4, cw + RO + 1.5), t2 = f.W(cu + 8, cw + RO + 3);
-      this.poleSign(g.s, t[0], t[1], f, L.SG_TAXI, 2.6);
+      this.poleSign(g.det, t[0], t[1], f, L.SG_TAXI, 2.6);
       g.s.box(Math.min(t[0], t2[0]), 3.0, Math.min(t[1], t2[1]), Math.max(t[0], t2[0]) + 4, 3.2, Math.max(t[1], t2[1]), { c: [0.55, 0.6, 0.62] });
     });
     this.addBox(c[0] - RI + 0.6, c[1] - RI + 0.6, c[0] + RI - 0.6, c[1] + RI - 0.6, 'w', -50, 0.6);
@@ -900,24 +933,7 @@ export class City {
       const u0 = i * seg, u1 = (i + 1) * seg, big = ['DENKI', 'HOMEC', 'SUPER', 'PACHI'].includes(k);
       const ld = big ? 34 : 22, bd = big ? 32 : 16;
       const sign = L['SG_' + k];
-      if (k === 'GAS') {
-        const c0 = f.W(u0 + 6, 5), c1 = f.W(u1 - 6, 17);
-        const cr = { x0: Math.min(c0[0], c1[0]), x1: Math.max(c0[0], c1[0]), z0: Math.min(c0[1], c1[1]), z1: Math.max(c0[1], c1[1]) };
-        const lr = this.frect(f, u0 + 1, u1 - 1, 0, 24);
-        this.mm.lots.push(lr);
-        this.add((cr.x0 + cr.x1) / 2, (cr.z0 + cr.z1) / 2, g => {
-          g.d1.flat(lr.x0, lr.z0, lr.x1, lr.z1, 0, { c: [0.9, 0.9, 0.88], mat: 7, lay: L.ASPHALT }, 8);
-          g.s.box(cr.x0, 5.2, cr.z0, cr.x1, 6.2, cr.z1, { c: [0.95, 0.95, 0.95], mat: 8 });
-          for (const t of [0.25, 0.75]) for (const q of [0.3, 0.7]) { const p = [cr.x0 + (cr.x1 - cr.x0) * t, cr.z0 + (cr.z1 - cr.z0) * q]; g.s.cbox(p[0], 2.6, p[1], 0.4, 5.2, 0.4, { c: [0.9, 0.9, 0.9] }); g.s.cbox(p[0] + 0.8, 0.8, p[1], 0.7, 1.6, 0.5, { c: [0.1, 0.35, 0.75] }); }
-          const n = [-f.inv[0], 0, -f.inv[1]], a = f.W(u0 + 7, 5), b = f.W(u1 - 7, 5);
-          g.s.panel(a[0], a[1], b[0], b[1], 5.25, 6.15, 0.05, n, { c: [1, 1, 1], mat: 16, lay: sign });
-          g.glow.flat(cr.x0, cr.z0, cr.x1, cr.z1, 0.07, { c: [0.9, 0.9, 1.0], mat: 5, lay: L.GLOW });
-        });
-        for (const t of [0.25, 0.75]) for (const q of [0.3, 0.7]) { const p = [cr.x0 + (cr.x1 - cr.x0) * t, cr.z0 + (cr.z1 - cr.z0) * q]; this.addBox(p[0] - 0.3, p[1] - 0.3, p[0] + 1.2, p[1] + 0.3, 'p'); }
-        this.building(f, u0 + 6, u1 - 6, 26, 36, { floors: 1, fh: 3.6, lay: L.SHOP, tw: 6, th: 3.6, col: [0.92, 0.92, 0.92], R, roofItems: false });
-        const pp = f.W(u0 + 1.5, 1.2); this.add(pp[0], pp[1], g => this.poleSign(g.s, pp[0], pp[1], f, sign, 6.5));
-        return;
-      }
+      if (k === 'GAS') { this.gasStation(f, u0, u1, R, sign); return; }
       this.lot(f, u0 + 1, u1 - 1, 0, ld, R, { fill: k === 'DEALER' ? 0.9 : 0.25, bx: B.bx, bz: B.bz, sign: k === 'DEALER' ? null : sign, signH: 6 });
       this.building(f, u0 + 3, u1 - 3, ld + 1, ld + 1 + bd, { floors: 1, fh: big ? 7 : 4.2, fh0: 0, lay: big ? L.METAL : L.SHOP, tw: 6, th: big ? 7 : 4.2, glay: big ? L.SHOP : null, col: big ? [0.88, 0.88, 0.86] : [0.95, 0.95, 0.95], sign, signY: big ? 4.4 : 2.9, signH: big ? 3.2 : 1.6, R, roofItems: big });
     });
@@ -956,7 +972,7 @@ export class City {
         // 外周フェンス
         g.s.box(fr.x0, 0, fr.z0, fr.x1, 1.8, fr.z0 + 0.06, { c: [0.3, 0.5, 0.35] }); g.s.box(fr.x0, 0, fr.z1 - 0.06, fr.x1, 1.8, fr.z1, { c: [0.3, 0.5, 0.35] });
         g.s.box(fr.x0, 0, fr.z0, fr.x0 + 0.06, 1.8, fr.z1, { c: [0.3, 0.5, 0.35] }); g.s.box(fr.x1 - 0.06, 0, fr.z0, fr.x1, 1.8, fr.z1, { c: [0.3, 0.5, 0.35] });
-        for (let k = 0; k < 8; k++) this.tree(g.s, fr.x0 + 4 + k * (fr.x1 - fr.x0 - 8) / 7, fr.z0 + 2, rng(k * 3));
+        for (let k = 0; k < 8; k++) this.tree(g.det, fr.x0 + 4 + k * (fr.x1 - fr.x0 - 8) / 7, fr.z0 + 2, rng(k * 3));
       });
       this.addBox(fr.x0, fr.z0, fr.x1, fr.z0 + 0.1, 'w'); this.addBox(fr.x0, fr.z1 - 0.1, fr.x1, fr.z1, 'w');
       this.addBox(fr.x0, fr.z0, fr.x0 + 0.1, fr.z1, 'w'); this.addBox(fr.x1 - 0.1, fr.z0, fr.x1, fr.z1, 'w');
@@ -999,3 +1015,4 @@ export class City {
   }
   // ---------- 郊外・河川・山・鉄道 ----------
 }
+installProps(City);
