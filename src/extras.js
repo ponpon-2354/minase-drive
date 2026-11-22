@@ -37,12 +37,16 @@ export function farmV4(city, r, R, opt = {}) {
   const st = city.stats, F = city.farmStats = city.farmStats || { fields: 0, water: 0, vinyl: 0, stands: 0, ponds: 0, orchard: 0, tea: 0, loops: 0 };
   city.mm.green.push(r);
   // 農家の集落（屋敷林つき）
-  const hx = r.x0 + 20 + R() * Math.max(1, W - 80), hz = r.z0 + 20 + R() * Math.max(1, D - 70), hr = { x0: hx - 4, x1: hx + 54, z0: hz - 4, z1: hz + 44 };
   // 農道（砂利・幅4m）
   const xs = [r.x0], zs = [r.z0];
   for (let x = r.x0 + 110 + R() * 40; x < r.x1 - 60; x += 110 + R() * 40) xs.push(x);
   for (let z = r.z0 + 110 + R() * 40; z < r.z1 - 60; z += 110 + R() * 40) zs.push(z);
   xs.push(r.x1); zs.push(r.z1);
+  // 農家の集落は農道・用水路と重ならない区画の内側に置く
+  let hx = null, hz = null;
+  { const cand = []; for (let i = 0; i < xs.length - 1; i++) for (let j = 0; j < zs.length - 1; j++) if (xs[i + 1] - xs[i] > 72 && zs[j + 1] - zs[j] > 60) cand.push([i, j]);
+    if (cand.length) { const [i, j] = cand[R() * cand.length | 0]; hx = xs[i] + 8 + R() * Math.max(0, xs[i + 1] - xs[i] - 72); hz = zs[j] + 6 + R() * Math.max(0, zs[j + 1] - zs[j] - 60); } }
+  const hr = hx == null ? { x0: 1e9, x1: 1e9, z0: 1e9, z1: 1e9 } : { x0: hx - 4, x1: hx + 58, z0: hz - 4, z1: hz + 48 };
   const gravel = { c: [0.78, 0.74, 0.64], lay: L.FIELD };
   for (const x of xs.slice(1, -1)) { city.mm.lanes.push({ axis: 'ns', c: x, a: r.z0, b: r.z1, w: 2, kind: 'farm' }); city.add(x, (r.z0 + r.z1) / 2, g => { g.d1.flat(x - 2, r.z0, x + 2, r.z1, 0.01, gravel, 4); g.s.box(x + 2.4, -0.6, r.z0, x + 3.6, 0.05, r.z1, { c: [0.62, 0.62, 0.6], noTop: true }); g.d1.flat(x + 2.55, r.z0, x + 3.45, r.z1, -0.35, { c: [0.8, 0.9, 0.95], lay: L.WATER, mat: 21 }, 6); }); city.addBox(x + 2.4, r.z0, x + 3.6, r.z1, 'w', -50, 0.05); }
   for (const z of zs.slice(1, -1)) { city.mm.lanes.push({ axis: 'ew', c: z, a: r.x0, b: r.x1, w: 2, kind: 'farm' }); city.add((r.x0 + r.x1) / 2, z, g => g.d1.flat(r.x0, z - 2, r.x1, z + 2, 0.012, gravel, 4)); }
@@ -88,25 +92,28 @@ export function farmV4(city, r, R, opt = {}) {
   }
   // 無人販売所（農道沿い）・トラクター
   for (const x of xs.slice(1, -1)) {
-    if (standN < 1 + (R() < 0.5 ? 1 : 0)) { const z = r.z0 + 30 + R() * (D - 60), sx = x - 3.3; standN++; F.stands++; city.addBox(sx - 0.6, z - 1, sx + 0.6, z + 1, 'p');
+    if (standN < 1 + (R() < 0.5 ? 1 : 0)) { let z = r.z0 + 30 + R() * (D - 60); if (zs.some(q => Math.abs(q - z) < 8)) z += 16; const sx = x - 3.3; standN++; F.stands++; city.addBox(sx - 0.6, z - 1, sx + 0.6, z + 1, 'p');
       city.add(sx, z, g => { g.s.box(sx - 0.5, 0, z - 0.9, sx + 0.5, 1.0, z + 0.9, { c: [0.6, 0.45, 0.3] }); for (const dz of [-0.85, 0.85]) g.s.cyl(sx - 0.45, 0, z + dz, 0.05, 2.0, 4, { c: [0.5, 0.38, 0.25] }); g.s.box(sx - 0.7, 2.0, z - 1.1, sx + 0.7, 2.1, z + 1.1, { c: [0.35, 0.45, 0.5] }); for (let k = 0; k < 3; k++) g.s.cbox(sx, 1.1, z - 0.6 + k * 0.6, 0.35, 0.2, 0.35, { c: [[0.85, 0.3, 0.2], [0.4, 0.7, 0.3], [0.9, 0.7, 0.2]][k] }); g.s.panel(sx + 0.52, z - 0.8, sx + 0.52, z + 0.8, 1.4, 1.8, 0.01, [1, 0, 0], { c: [1, 1, 1], mat: 16, lay: L.SG_MUJIN }); }); }
-    if (R() < 0.6) { const z = r.z0 + 20 + R() * (D - 40), tx = x + 6; city.addBox(tx - 1, z - 1.2, tx + 1, z + 1.2, 'p'); city.add(tx, z, g => tractor(g.det, tx, z, R() * 6)); }
+    const offRoad = z => !zs.some(q => Math.abs(q - z) < 8); // 横の農道の交差部には置かない
+    if (R() < 0.6) { let z = r.z0 + 20 + R() * (D - 40); if (!offRoad(z)) z += 16; const tx = x + 6; city.addBox(tx - 1, z - 1.2, tx + 1, z + 1.2, 'p'); city.add(tx, z, g => tractor(g.det, tx, z, R() * 6)); }
   }
   // 農家
-  const Rh = rng(R() * 1e6 | 0);
+  const Rh = rng(R() * 1e6 | 0), kt = MODELS.find(m => m.name === 'ハイゼットトラック');
+  if (hx != null) {
   for (let k = 0; k < 2; k++) {
     const x = hx + 4 + k * 24, z = hz + 8, w = 12 + Rh() * 3, d = 9 + Rh() * 2, wc = [[0.9, 0.86, 0.78], [0.82, 0.78, 0.7], [0.75, 0.72, 0.66]][Rh() * 3 | 0], rc = [[0.3, 0.32, 0.36], [0.45, 0.25, 0.2], [0.25, 0.3, 0.4]][Rh() * 3 | 0];
     city.addBox(x, z, x + w, z + d); city.stats.houses++; city.mm.blds.push({ x0: x, x1: x + w, z0: z, z1: z + d, h: 8 });
     city.add(x, z, g => { g.s.box(x, 0, z, x + w, 5.6, z + d, { c: wc, mat: 3, side: { lay: L.HOUSE, tw: 7, th: 5.6 } }); g.s.gable(x, z, x + w, z + d, 5.6, 2.8, { c: rc, lay: L.KAWARA, tw: 2, gc: wc }, 0.6); });
   }
-  const sx = hx + 10, sz = hz + 26, kt = MODELS.find(m => m.name === 'ハイゼットトラック');
+  const sx = hx + 10, sz = hz + 26;
   city.addBox(sx, sz, sx + 12, sz + 8); city.addCarBox(hx + 30, hz + 31, Math.PI / 2, kt);
   city.add(sx, sz, g => {
     g.s.box(sx, 0, sz, sx + 12, 4.5, sz + 8, { c: [0.7, 0.72, 0.74], side: { lay: L.METAL, tw: 6, th: 4.5 } });
     g.s.gable(sx, sz, sx + 12, sz + 8, 4.5, 1.6, { c: [0.55, 0.3, 0.25], lay: L.METAL, tw: 3 }, 0.3);
     city.bakeCar(g.det, kt, { rgb: [0.95, 0.95, 0.95] }, hx + 30, hz + 31, Math.PI / 2);
-    for (let t = 0; t < 12; t++) { const a = t / 12 * Math.PI * 2; city.tree(g.det, hx + 25 + Math.cos(a) * 30, hz + 20 + Math.sin(a) * 24, Rh); }
+    for (let t = 0; t < 12; t++) { const a = t / 12 * Math.PI * 2; city.tree(g.det, hx + 25 + Math.cos(a) * 28, hz + 20 + Math.sin(a) * 22, Rh); }
   });
+  }
   // 軽トラックが農道を巡回（周回ルート）
   if (xs.length > 2 && zs.length > 2 && F.loops < 5 && R() < 0.7) {
     const x0 = xs[1] - 1, x1 = xs[2] ? Math.min(xs[2], r.x1 - 3) - 1 : r.x1 - 4, z0 = zs[1] - 1, z1 = zs[2] ? Math.min(zs[2], r.z1 - 3) - 1 : r.z1 - 4;

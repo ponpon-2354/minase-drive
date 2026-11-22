@@ -91,9 +91,21 @@ export class City {
     return this.chunks[cz * NCX + cx];
   }
   add(x, z, fn) { this.chunkAt(x, z).cmds.push(fn); }
+  // 少しずつ組み立てる版：締め切り時刻（ms）まで生成し、終わったら GPU へ転送して true を返す
+  buildChunkStep(ch, R, deadline) {
+    if (ch.m) return true;
+    const P = ch.pend || (ch.pend = { g: { s: new GB(), det: new GB(), d1: new GB(), d2: new GB(), glow: new GB(), lines: new GB(), sh: new GB(), pud: new GB() }, i: 0 });
+    do { if (P.i < ch.cmds.length) ch.cmds[P.i++](P.g); } while (P.i < ch.cmds.length && performance.now() < deadline);
+    if (P.i < ch.cmds.length) return false;
+    this.uploadChunk(ch, R, P.g); ch.pend = null; return true;
+  }
   buildChunk(ch, R) {
+    if (ch.m) return;
     const g = { s: new GB(), det: new GB(), d1: new GB(), d2: new GB(), glow: new GB(), lines: new GB(), sh: new GB(), pud: new GB() };
     for (const f of ch.cmds) f(g);
+    ch.pend = null; this.uploadChunk(ch, R, g);
+  }
+  uploadChunk(ch, R, g) {
     ch.m = { s: R.mesh(g.s.build()), det: R.mesh(g.det.build()), d1: R.mesh(g.d1.build()), d2: R.mesh(g.d2.build()), glow: R.mesh(g.glow.build()), lines: R.mesh(g.lines.build(), R.gl.LINES), sh: R.mesh(g.sh.build()), pud: R.mesh(g.pud.build()) };
     ch.tris = (g.s.count + g.det.count + g.d1.count + g.d2.count) / 3;
   }

@@ -248,6 +248,17 @@ function post(city) {
   };
   const tb = city.tunnelBox;
   city.inTunnelXZ = (x, z) => x > tb.x0 && x < tb.x1 && z > tb.z0 && z < tb.z1;
+  // 市の外周（見えない壁の位置）に柵を立てて、ここが行き止まりだと分かるようにする
+  { const Lb = 2041, G2 = city.global, o = { c: [0.85, 0.85, 0.82] }, po = { c: [0.55, 0.55, 0.52] };
+    for (const [ax, sgn] of [['x', 1], ['x', -1], ['z', 1], ['z', -1]]) for (let t = -Lb; t < Lb; t += 20) {
+      const P = u => ax === 'x' ? [sgn * Lb, u] : [u, sgn * Lb], a = P(t), b = P(t + 20);
+      if (ax === 'z' && sgn > 0 && false) continue;
+      const ya = city.terrainY(a[0], a[1]), yb = city.terrainY(b[0], b[1]);
+      if ((a[1] > 530 && a[1] < 600) || (b[1] > 530 && b[1] < 600)) { if (ax === 'x') continue; }
+      const n = ax === 'x' ? [-sgn, 0, 0] : [0, 0, -sgn];
+      G2.quadN([a[0], ya + 0.55, a[1]], [b[0], yb + 0.55, b[1]], [b[0], yb + 0.9, b[1]], [a[0], ya + 0.9, a[1]], n, o);
+      G2.box(a[0] - 0.08, ya - 0.2, a[1] - 0.08, a[0] + 0.08, ya + 1.0, a[1] + 0.08, po);
+    } }
   roadExtras(city);
   townExtras(city);
   shadowsAndFar(city);
@@ -328,6 +339,16 @@ function buildMountain(city) {
     const cells = []; for (let x = T0.x0; x < T0.x1; x += 16) for (let z = T0.z0; z < T0.z1; z += 16) { const nn = city.mtnNearest(x + 8, z + 8); if (nn && nn.d < hw + 12) continue; cells.push([x, z, Math.round(city.terrainY(x + 8, z + 8) * 2) / 2]); }
     for (const [x, z, y] of cells) { n++; city.add(x + 8, z + 8, g => { const lo = Math.min(...[[0, 0], [16, 0], [0, 16], [16, 16]].map(([a, b]) => city.terrainY(x + a, z + b))) - 0.5; g.s.box(x + 0.2, lo, z + 0.2, x + 15.8, y + 0.25, z + 15.8, { c: [0.6, 0.58, 0.52], lay: L.ROCK, side: { lay: L.ROCK, tw: 3, th: 3 }, noTop: true }); g.d1.flat(x + 0.6, z + 0.6, x + 15.4, z + 15.4, y + 0.05, { c: [1, 1, 1], lay: (x + z) % 32 ? L.PADDY : L.WATERPAD }, 8); g.s.box(x + 0.2, y, z + 0.2, x + 15.8, y + 0.3, z + 0.6, { c: [0.5, 0.62, 0.38], lay: L.GRASS }); }); }
     city.stats.terraces = n; }
+  // 遠景用の粗い地形（40m格子）：チャンクが読み込まれる前でも山肌と峠道の帯が見えるように
+  city.farTerrain = new Map();
+  { const S2 = 40;
+    for (let z = TZ0; z < TZ1; z += S2) for (let x = TX0; x < TX1; x += S2) {
+      const ch = city.chunkAt(x + S2 / 2, z + S2 / 2); let L2 = city.farTerrain.get(ch); if (!L2) { L2 = []; city.farTerrain.set(ch, L2); } L2.push([x, z]);
+    }
+    for (const [ch, L2] of city.farTerrain) city.farTerrain.set(ch, g => { for (const [x, z] of L2) { const h = (a, b) => city.terrainY(x + a, z + b) - 0.4, hh = h(20, 20), k = 0.85 + Math.sin(x * 0.013 + z * 0.021) * 0.08, o = { c: hh > 160 ? [0.36 * k, 0.45 * k, 0.36 * k] : [0.3 * k, 0.42 * k, 0.28 * k] }; g.quadN([x, h(0, 0), z], [x + S2, h(S2, 0), z], [x + S2, h(S2, S2), z + S2], [x, h(0, S2), z + S2], [0, 1, 0], o); } });
+    // 峠道の帯（遠くからでも道筋が分かる）
+    const F = mtn.full; for (let i = 0; i < F.length - 1; i += 4) { const a = F[i], b = F[Math.min(F.length - 1, i + 4)], ch = city.chunkAt(a[0], a[1]), prev = city.farTerrain.get(ch); city.farTerrain.set(ch, g => { prev && prev(g); const dx = b[0] - a[0], dz = b[1] - a[1], l = Math.hypot(dx, dz) || 1, nx = dz / l * (hw + 0.5), nz = -dx / l * (hw + 0.5); g.quadN([a[0] - nx, a[2] + 0.1, a[1] - nz], [a[0] + nx, a[2] + 0.1, a[1] + nz], [b[0] + nx, b[2] + 0.1, b[1] + nz], [b[0] - nx, b[2] + 0.1, b[1] - nz], [0, 1, 0], { c: [0.35, 0.35, 0.36] }); }); }
+  }
   // 道路面・区画線・ガードレール
   const full = mtn.full, pi = polyInfo(full), N = full.length;
   const off = (i, o) => [full[i][0] + pi.nrm[i][0] * o, full[i][2] + 0.06, full[i][1] + pi.nrm[i][1] * o];
@@ -341,7 +362,10 @@ function buildMountain(city) {
   // ガードレールは谷側（路肩の外が1.2m以上低い）だけ。描画と当たり判定は同じ判定を使う
   const valley = (i, s) => { const p = off(i, s * (hw + 7)); return city.terrainY(p[0], p[2]) < full[i][2] - 1.2; };
   for (const p of pulls) p.side = valley(p.i, 1) ? -1 : 1;
-  const railAt = (i, s) => !noRail(i) && !noRail(i + 1) && valley(i, s) && valley(i + 1, s) && !(inPull(pi.cum[i]) && inPull(pi.cum[i]).side === s);
+  // ガードレールは両側に設置（路肩の外へ落ちないように）。切るのは 交差点付近・待避所の側・道の駅の入口側 だけ
+  const padC = [(city.restPad.x0 + city.restPad.x1) / 2, (city.restPad.z0 + city.restPad.z1) / 2];
+  const padGap = (i, s) => { const p = off(i, s * (hw + 0.45)), q = off(i, -s * (hw + 0.45)); return pdN(p) && Math.hypot(p[0] - padC[0], p[2] - padC[1]) < Math.hypot(q[0] - padC[0], q[2] - padC[1]); };
+  const railAt = (i, s) => !noRail(i) && !noRail(i + 1) && !(inPull(pi.cum[i]) && inPull(pi.cum[i]).side === s) && !padGap(i, s) && !padGap(i + 1, s);
   city.pullouts = pulls;
   city.mtnRail = { railAt, valley };
   const inT = i => pi.cum[i] > mtn.ta - 12 && pi.cum[i] < mtn.tb + 12;
@@ -369,7 +393,6 @@ function buildMountain(city) {
         for (const s of [-1, 1]) {
           if (!railAt(i, s)) continue;
           const o = s * (hw + 0.45), p = off(i, o), q = off(i + 1, o);
-          if (pdN(p) || pdN(q)) continue;
           g.s.quadN([p[0], p[1] + 0.45, p[2]], [q[0], q[1] + 0.45, q[2]], [q[0], q[1] + 0.8, q[2]], [p[0], p[1] + 0.8, p[2]], [pi.nrm[i][0] * s, 0, pi.nrm[i][1] * s], { c: [0.9, 0.9, 0.88] });
           if (i % 1 === 0) g.s.cbox(p[0], p[1] + 0.35, p[2], 0.1, 0.7, 0.1, { c: [0.6, 0.6, 0.6] });
         }
@@ -378,9 +401,7 @@ function buildMountain(city) {
     for (let i = i0; i < i1; i++) if (!inT(i) && !inT(i + 1)) for (const s of [-1, 1]) {
       if (!railAt(i, s)) continue;
       const o = s * (hw + 0.45), p = off(i, o), q = off(i + 1, o);
-      // 休憩所の入口はガードレールを切る
-      const pd = city.restPad, near = (pt) => pt[0] > pd.x0 - 6 && pt[0] < pd.x1 + 6 && pt[2] > pd.z0 - 6 && pt[2] < pd.z1 + 6;
-      if (near(p) || near(q)) continue;
+      // 描画と同じ railAt() で判定（道の駅の入口・待避所は開いている）
       city.addWall(p[0], p[2], q[0], q[2], Math.min(p[1], q[1]) - 1.2, Math.max(p[1], q[1]) + 1.0);
     }
   }
@@ -459,7 +480,11 @@ function buildMountain(city) {
   city.addBox(pd.x0 + 4, pd.z0 + 2, pd.x0 + 22, pd.z0 + 11);
   city.mm.lots.push({ x0: pd.x0, x1: pd.x1, z0: pd.z0, z1: pd.z1 });
   const Rp = rng(55);
-  for (let k = 0; k < 4; k++) if (Rp() < 0.7) { const m = pickModel(Rp), c = pickColor(m, Rp), x = pd.x0 + 7.4 + k * 2.8, z = pd.z1 - 3.5; city.addCarBox(x, z, Math.PI, m); city.add(x, z, g => city.bakeCar(g.det, m, c, x, z, Math.PI, pd.y)); }
+  // 道の駅の中心から峠道へ出る通り道には駐車車両を置かない
+  const pcx = (pd.x0 + pd.x1) / 2, pcz = (pd.z0 + pd.z1) / 2; let rx = pcx, rz = pcz; { let bd = 1e9; for (const q of full) { const d = Math.hypot(q[0] - pcx, q[1] - pcz); if (d < bd) { bd = d; rx = q[0]; rz = q[1]; } } }
+  pd.exit = [rx, rz];
+  const onPath = (x, z) => { const vx = rx - pcx, vz = rz - pcz, t = Math.max(0, Math.min(1, ((x - pcx) * vx + (z - pcz) * vz) / (vx * vx + vz * vz))); return Math.hypot(pcx + vx * t - x, pcz + vz * t - z) < 5; };
+  for (let k = 0; k < 4; k++) if (Rp() < 0.7) { const m = pickModel(Rp), c = pickColor(m, Rp), x = pd.x0 + 7.4 + k * 2.8, z = pd.z1 - 3.5; if (onPath(x, z)) continue; city.addCarBox(x, z, Math.PI, m); city.add(x, z, g => city.bakeCar(g.det, m, c, x, z, Math.PI, pd.y)); }
   void e;
 }
 function conifer(gb, x, y, z, s, R) {

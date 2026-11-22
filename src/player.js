@@ -4,7 +4,8 @@ import { clamp } from './math.js';
 import { MIRA } from './carmodels.js';
 
 // 路面種別：0=草地・畑 1=舗装 2=歩道 3=砂利・敷地
-const SURF = { 0: { mu: 0.45, rr: 0.1, drag: 75 }, 1: { mu: 1, rr: 0.012, drag: 0 }, 2: { mu: 0.95, rr: 0.02, drag: 0 }, 3: { mu: 0.85, rr: 0.03, drag: 8 } };
+// 路面：草地・砂利は少し滑りやすいだけで、速度の上限（抵抗による頭打ち）は設けない
+const SURF = { 0: { mu: 0.75, rr: 0.02, drag: 0 }, 1: { mu: 1, rr: 0.012, drag: 0 }, 2: { mu: 0.95, rr: 0.015, drag: 0 }, 3: { mu: 0.88, rr: 0.016, drag: 0 } };
 
 export class Player {
   constructor(city) {
@@ -86,12 +87,13 @@ export class Player {
     const ay = (Fyf * Math.cos(this.steer) + Fyr) / this.m - this.vx * this.w;
     const aw = (this.a * Fyf * Math.cos(this.steer) - this.b * Fyr) / this.Iz;
     this.vy += ay * dt; this.w += aw * dt;
-    const kin = clamp(1 - (Math.abs(this.vx) - 1.5) / 3, 0, 1);
+    const piv = (this.wallPivot || 0) > 0; if (piv) this.wallPivot -= dt; // 壁際での向き変え中は低速の運動学的な補正をかけない
+    const kin = piv ? 0 : clamp(1 - (Math.abs(this.vx) - 1.5) / 3, 0, 1);
     if (kin > 0) {
       const wk = this.vx * Math.tan(this.steer) / MIRA.wb;
       this.w += (wk - this.w) * kin; this.vy *= 1 - kin;
     }
-    if (this.assist) { this.vy *= 1 - Math.min(1, dt * 2.5); const wk = this.vx * Math.tan(this.steer) / MIRA.wb; this.w += (wk - this.w) * Math.min(1, dt * 2.0); }
+    if (this.assist && !piv) { this.vy *= 1 - Math.min(1, dt * 2.5); const wk = this.vx * Math.tan(this.steer) / MIRA.wb; this.w += (wk - this.w) * Math.min(1, dt * 2.0); }
     const c = Math.cos(this.yaw), s = Math.sin(this.yaw);
     const ox = this.x, oz = this.z;
     this.yaw += this.w * dt;
@@ -127,13 +129,23 @@ export class Player {
   }
   collide(ox, oz, npcs, dt = 0.008) {
     const city = this.city;
-    if (!city.allowed(this.x, this.z)) { this.x = ox; this.z = oz; this.contact(0, 0, 0.3, dt); }
+    // 市の外周と川：見えない壁として扱い、壁と同じく法線方向だけ止めて滑らせる（位置を戻して止める方式だと抜け出せなくなる）
+    { const Lb = 2040; let bn = null;
+      for (const p of this.corners()) {
+        let nx = 0, nz = 0, d = 0;
+        if (p[0] > Lb) { nx = -1; d = p[0] - Lb; } else if (p[0] < -Lb) { nx = 1; d = -Lb - p[0]; }
+        else if (p[1] > Lb) { nz = -1; d = p[1] - Lb; } else if (p[1] < -Lb) { nz = 1; d = -Lb - p[1]; }
+        else if (p[1] > 530 && p[1] < 600 && this.y < 0.6 && !(city.bridges || []).some(b => Math.abs(p[0] - b.x) < b.hw + 0.4)) { if (this.z < 565) { nz = -1; d = p[1] - 530; } else { nz = 1; d = 600 - p[1]; } }
+        if (d > 0 && (!bn || d > bn.d)) bn = { nx, nz, d, river: Math.abs(p[0]) <= Lb && Math.abs(p[1]) <= Lb };
+      }
+      if (bn) { this.x += bn.nx * bn.d; this.z += bn.nz * bn.d; this.contact(bn.nx, bn.nz, bn.d, dt); this.edgeHit = bn.river ? 2 : 1; }
+    }
     for (let it = 0; it < 2; it++) {
       const boxes = city.query(this.x, this.z, 3);
       let pushX = 0, pushZ = 0;
       const yy = this.y;
       for (const p of this.corners()) for (const b of boxes) {
-        if (yy + 1.3 < b.y0 || yy > b.y1 || b.kind === 'p') continue;
+        if (yy + 1.3 < b.y0 || yy + 0.35 > b.y1 || b.kind === 'p') continue; // 高さ35cm未満の段差（縁石・水路の縁など）は乗り越えられる
         if (p[0] > b.x0 && p[0] < b.x1 && p[1] > b.z0 && p[1] < b.z1) {
           const dl = p[0] - b.x0, dr = b.x1 - p[0], dt2 = p[1] - b.z0, db = b.z1 - p[1], m = Math.min(dl, dr, dt2, db);
           let px = 0, pz = 0;
@@ -211,6 +223,14 @@ export class Player {
     } else { wx *= -0.2; wz *= -0.2; }
     this.vx = wx * s + wz * c; this.vy = wx * c - wz * s;
     this.w *= 1 - Math.min(1, dt * 6);
+    // 壁に押し付けたままハンドルを切ってアクセルを踏んだら、その場で向きを変えられるようにする（壁際で動けなくなるのを防ぐ）
+    const inp = this.input || {};
+    // 浅い角度で壁に当たったまま進むときは、車の向きを壁に沿わせて滑らせる（こすったまま止まってしまうのを防ぐ）
+    if ((nx || nz) && Math.abs(this.vx) > 0.3) {
+      const hx = Math.sin(this.yaw) * Math.sign(this.vx), hz = Math.cos(this.yaw) * Math.sign(this.vx), into = -(hx * nx + hz * nz);
+      if (into > 0.02 && into < 0.8) { let tx = -nz, tz = nx; if (tx * hx + tz * hz < 0) { tx = -tx; tz = -tz; } const want = Math.atan2(tx * Math.sign(this.vx), tz * Math.sign(this.vx)); let d = want - this.yaw; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; this.yaw += clamp(d, -1.6 * dt, 1.6 * dt); }
+    }
+    if ((nx || nz) && inp.thr > 0.3 && Math.abs(this.steer) > 0.05) { const sg = Math.sign(this.steer) * (this.gear === 'R' ? -1 : 1); if (Math.abs(this.w) < 0.6) this.w = sg * 0.6; this.wallPivot = 0.15; }
     void depth;
   }
 }

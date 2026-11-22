@@ -65,7 +65,12 @@ async function boot() {
     { const g = new GB(); buildMoto(g, [1, 1, 1], 9); npcMesh[MOTO_M.id] = npcLod[MOTO_M.id] = R.mesh(g.build()); }
     for (let k = 0; k < 12; k++) pedMesh[k] = ['walk0', 'walk1', 'stand'].map(pose => { const g = new GB(); buildPerson(g, { age: k % 3, sex: (k >> 1) % 2, outfit: k % 5 === 4 ? 1 : k % 7 === 6 ? 2 : 0, pose, seed: k + 1 }); return R.mesh(g.build()); });
     // 遠景シルエット（読み込み範囲の外にある建物を低ポリの箱で表示）
-    for (const [ch, boxes] of city.farBoxes || []) { const g = new GB(); for (const [x0, z0, x1, z1, h] of boxes) g.box(x0, 0, z0, x1, h, z1, { c: [0.62, 0.64, 0.68], mat: 23, noTop: false }); ch.far = R.mesh(g.build()); }
+    for (const ch of city.chunks) { // 遠景：建物の箱＋（山間部は）粗い地形
+      const g = new GB(), gt = new GB();
+      for (const [x0, z0, x1, z1, h] of (city.farBoxes && city.farBoxes.get(ch)) || []) if (h >= 9) g.box(x0, 0, z0, x1, h, z1, { c: [0.62, 0.64, 0.68], mat: 23, noTop: true }); // 戸建ては省き、中高層だけ
+      const ft = city.farTerrain && city.farTerrain.get(ch); if (ft) ft(gt);
+      if (g.count) ch.far = R.mesh(g.build()); if (gt.count) ch.farT = R.mesh(gt.build());
+    }
     meshes.blob = R.mesh((() => { const g = new GB(); g.flat(-0.5, -0.5, 0.5, 0.5, 0.04, { c: [0, 0, 0], mat: 5 }); return g.build(); })());
     meshes.stars = R.mesh(starGeo()); meshes.clouds = R.mesh(cloudGeo()); meshes.ped = R.mesh(pedSigGeo()); meshes.puff = R.mesh((() => { const g = new GB(); g.quadN([-1, -1, 0], [1, -1, 0], [1, 1, 0], [-1, 1, 0], [0, 0, 1], { c: [0.85, 0.85, 0.85], mat: 25, lay: L.CLOUD }, [[0, 1], [1, 1], [1, 0], [0, 0]]); return g.build(); })());
     meshes.global = R.mesh(city.global.build()); meshes.gdecal = R.mesh(city.globalDecal.build()); meshes.tram = R.mesh(city.tramGeo.build());
@@ -90,7 +95,7 @@ async function boot() {
     $('mContinue').hidden = !sv;
     show('title'); state = 'title';
     console.log('city stats', city.stats, 'lotsAI', city.stats.lotsAI, 'aabbs', city.aabbs.length, 'variations', VARIATIONS);
-    if (DEV) window.G = { peds: () => peds, car, odo, models: MODELS, get player() { return player; }, get traffic() { return traffic; }, city, S, R, setCam: m => { camMode = m; }, setTime: h => { gameMin = h * 60; }, setWeather: w => { S.weather = w; weather = w; }, tp: (x, z, yaw) => player.reset(x, z, yaw, 1000), warp: i => doWarp(i), nav: () => nav, gSpd: () => gSpd, state: () => state, sel: () => openSelect('title'), stats: () => ({ fps: tick.fps, ms: loop.ms, draws: R.stats.draws, tris: R.stats.tris, npc: traffic.cars.length, target: traffic.target, parked: traffic.stats.parkedNow, chunks: city.chunks.filter(c => c.m).length }) };
+    if (DEV) window.G = { peds: () => peds, car, odo, hist: () => loop.hist, prof: () => streamChunks.prof, models: MODELS, get player() { return player; }, get traffic() { return traffic; }, city, S, R, setCam: m => { camMode = m; }, setTime: h => { gameMin = h * 60; }, setWeather: w => { S.weather = w; weather = w; }, tp: (x, z, yaw) => player.reset(x, z, yaw, 1000), warp: i => doWarp(i), nav: () => nav, gSpd: () => gSpd, state: () => state, sel: () => openSelect('title'), stats: () => ({ fps: tick.fps, ms: loop.ms, draws: R.stats.draws, tris: R.stats.tris, npc: traffic.cars.length, target: traffic.target, parked: traffic.stats.parkedNow, chunks: city.chunks.filter(c => c.m).length }) };
     requestAnimationFrame(loop);
   } catch (e) { console.error(e); $('err').textContent = 'エラー: ' + e.message + '（再読み込みしてください）'; }
 }
@@ -299,9 +304,9 @@ function clearAround(x, z, r = 6) { for (const c of traffic.cars.slice()) if (!c
 function doWarp(i) {
   const w = WARPS[i];
   if (w[1] === 'pad') { // 道の駅：駐車場の中央で、峠道（出口）の方を向いて出現
-    const p = city.restPad, cx = (p.x0 + p.x1) / 2, cz = p.z1 - 3.5;
-    let tx = cx, tz = cz + 20; { let bd = 1e9; for (const q of city.mtn.full) { const d = Math.hypot(q[0] - cx, q[1] - cz); if (d < bd) { bd = d; tx = q[0]; tz = q[1]; } } }
-    player.reset(cx + 6, cz, Math.atan2(tx - cx - 6, tz - cz), p.y + 1);
+    const p = city.restPad, cx = (p.x0 + p.x1) / 2, cz = (p.z0 + p.z1) / 2 + 2; // 中央に出現し、出口（峠道）を向く
+    let [tx, tz] = p.exit || [cx, cz + 20];
+    player.reset(cx, cz, Math.atan2(tx - cx, tz - cz), p.y + 1);
   } else { const q = warpPos(w[1], w[2], w[3]); player.reset(q.x, q.z, q.yaw, (q.y || 0) + 1); }
   clearAround(player.x, player.z); cam.mode = -1; lastPos = null;
 }
@@ -434,6 +439,7 @@ let last = performance.now();
 function loop(now) {
   requestAnimationFrame(loop);
   loop.raw = (now - last) / 1000;
+  if (DEV) { (loop.hist = loop.hist || []).push(loop.raw); if (loop.hist.length > 900) loop.hist.shift(); }
   let dt = Math.min(0.05, loop.raw); last = now;
   T += dt;
   const t0 = performance.now();
@@ -464,6 +470,7 @@ function tick(dt) {
     const n = Math.ceil(dt / 0.008), h = dt / n, wet = wetK * (1 - tunK);
     for (let i = 0; i < n; i++) player.step(h, { rain: wet > 0.5, wet }, traffic.cars);
     gearFeedback();
+    if (player.edgeHit) { toast(player.edgeHit === 2 ? '川には入れません。橋を渡ってください' : 'ここから先は水瀬市の外です。ハンドルを切るかバックで戻れます', 2200); player.edgeHit = 0; }
     if (player.needRescue) { player.needRescue = false; const w = warpPos(player.x, player.z, player.yaw); player.reset(w.x, w.z, w.yaw, (w.y || 0) + 1); clearAround(player.x, player.z); cam.mode = -1; lastPos = null; toast('動けなくなったので近くの道路に戻しました', 2200); }
     // 表示速度：位置の変化から求めた対地速度をなめらかにしたもの
     if (lastPos) { const dd = Math.hypot(player.x - lastPos[0], player.z - lastPos[1], (player.y - lastPos[2]) * 0.5), v = dd / Math.max(dt, 1e-3); gSpd += (Math.min(v, 80) - gSpd) * (1 - Math.exp(-dt * 6)); odo.real += dd; odo.disp += gSpd * dt; }
@@ -564,13 +571,27 @@ function aebCheck() {
   if (on && !aebCheck.on) snd.beep(2000, 0.06, 3);
   aebCheck.on = on > 0.5; return on;
 }
+// チャンクの読み込み：近い順＋進行方向を優先し、1フレームあたりの処理時間に上限を設けて少しずつ組み立てる
 function streamChunks() {
-  let built = false;
-  const p = state === 'title' ? cam.look : [player.x, 0, player.z];
+  const tp = state === 'title' ? cam.look : [player.x, 0, player.z];
+  const sp = state === 'title' ? 0 : Math.min(40, Math.abs(player.vx || 0));
+  const ax = tp[0] + Math.sin(player.yaw) * sp * 4, az = tp[2] + Math.cos(player.yaw) * sp * 4; // 約4秒先
+  const loadR = S.draw + 280 + sp * 4, freeR = S.draw + 560 + sp * 4;
+  const t0 = performance.now(), budget = MOBILE ? 6 : 8;
+  let want = null, wd = 1e9;
   for (const c of city.chunks) {
-    const d = Math.hypot(c.x - p[0], c.z - p[2]);
-    if (!c.m && d < S.draw + 280 && !built) { city.buildChunk(c, R); built = true; }
-    else if (c.m && d > S.draw + 560) city.freeChunk(c, R);
+    const d = Math.hypot(c.x - tp[0], c.z - tp[2]);
+    if (c.m) { if (d > freeR) city.freeChunk(c, R); continue; }
+    if (c.pend && d > freeR) { c.pend = null; continue; }
+    if (d < loadR) { const pr = Math.hypot(c.x - ax, c.z - az) * 0.6 + d * 0.4 - (c.pend ? 200 : 0); if (pr < wd) { wd = pr; want = c; } }
+  }
+  // 時間の許す限り続けて組み立てる（最低でも1回は進める）
+  for (let n = 0; want && n < 4; n++) {
+    const ts = performance.now(), done = city.buildChunkStep(want, R, t0 + budget);
+    if (DEV) (streamChunks.prof = streamChunks.prof || []).push([Math.round(want.x), Math.round(want.z), +(performance.now() - ts).toFixed(1), done ? 1 : 0]);
+    if (!done || performance.now() - t0 > budget) break;
+    want = null; wd = 1e9;
+    for (const c of city.chunks) { if (c.m) continue; const d = Math.hypot(c.x - tp[0], c.z - tp[2]); if (d < loadR) { const pr = Math.hypot(c.x - ax, c.z - az) * 0.6 + d * 0.4; if (pr < wd) { wd = pr; want = c; } } }
   }
 }
 function drawWorld(env, planes, pM, lightsOn) {
@@ -587,7 +608,10 @@ function drawWorld(env, planes, pM, lightsOn) {
     const d = Math.hypot(c.x - cam.p[0], c.z - cam.p[2]); c.dd = d;
     const inV = M4.sphereIn(planes, c.x, 10, c.z, 185);
     if (c.m && d < S.draw + 180 && inV) vis.push(c);
-    else if (c.far && inV && d > 150) r.draw(c.far); // 遠景シルエット
+    else if (inV) { // 読み込み前・範囲外のチャンクは低ポリの地形とシルエットで埋める（霧で見えない距離は描かない）
+      if (c.farT && d < S.draw + 400) r.draw(c.farT);
+      if (c.far && d < 2600) r.draw(c.far);
+    }
   }
   const detD = S.det * (0.6 + 0.4 * perfK); // 重いときは細部（小物・駐車車両）の表示距離も縮める
   for (const c of vis) { r.draw(c.m.s); if (c.dd < detD) r.draw(c.m.det); }
