@@ -14,7 +14,7 @@
    LAYOUT: 画面全体が3D。UIは四隅に小さく、操作ボタンは親指の位置。 */
 :root{color-scheme:dark;--ink:#f3efe6;--amb:#ffb63a;--teal:#19c3a0;--bg:#0d0f14;--pan:rgba(13,15,20,.78)}
 *{box-sizing:border-box;min-width:0;-webkit-tap-highlight-color:transparent}
-html,body{margin:0;height:100%;background:#000;overflow:hidden;color:var(--ink);font:15px/1.5 'M PLUS 1p','Hiragino Sans','Noto Sans JP',sans-serif;user-select:none;-webkit-user-select:none;touch-action:none}
+html,body{margin:0;height:100%;overscroll-behavior:none;-webkit-text-size-adjust:100%;-webkit-touch-callout:none;background:#000;overflow:hidden;color:var(--ink);font:15px/1.5 'M PLUS 1p','Hiragino Sans','Noto Sans JP',sans-serif;user-select:none;-webkit-user-select:none;touch-action:none}
 canvas#gl{position:fixed;inset:0;width:100%;height:100%;display:block}
 .scr{position:fixed;inset:0;display:none;align-items:center;justify-content:center;padding:max(16px,env(safe-area-inset-top)) 16px 16px}
 .scr.on{display:flex}
@@ -38,6 +38,7 @@ select,input[type=range]{width:100%;font:inherit;font-size:16px;min-height:36px;
 .chip.on{border-color:var(--amb);box-shadow:0 0 0 3px rgba(255,182,58,.3)}
 #select{align-items:flex-end}
 #select .panel{text-align:center;margin-bottom:4px;padding:10px 14px}#select h2{font-size:16px;margin-bottom:4px}#select .chip{width:44px;height:44px}#select .chips{margin:6px 0}
+.drv{display:flex;gap:6px;align-items:center;justify-content:center;margin:4px 0}.drv select{width:auto;min-height:32px}.drv label{font-size:13px;opacity:.85}
 .cname{font-weight:700;font-size:16px;min-height:1.5em}
 .btns{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-top:10px}
 .howto p{margin:6px 0;font-size:14px}.howto kbd{background:#2a2e38;border-radius:3px;padding:0 6px;font-family:inherit}
@@ -55,7 +56,13 @@ select,input[type=range]{width:100%;font:inherit;font-size:16px;min-height:36px;
 #mm{position:absolute;left:max(10px,env(safe-area-inset-left));top:max(10px,env(safe-area-inset-top));width:130px;height:130px;border-radius:50%;border:2px solid rgba(255,182,58,.5);background:#111}
 #info{position:absolute;left:max(150px,calc(env(safe-area-inset-left) + 150px));top:max(12px,env(safe-area-inset-top));font-size:13px;text-shadow:0 1px 3px #000;line-height:1.35}
 #info .d{color:var(--amb);font-weight:700}
-#dbg{position:absolute;left:10px;top:150px;font-size:11px;opacity:.75;white-space:pre;text-shadow:0 1px 2px #000}
+#dbg{position:absolute;left:max(10px,env(safe-area-inset-left));bottom:calc(110px + env(safe-area-inset-bottom));font-size:11px;opacity:.75;white-space:pre;text-shadow:0 1px 2px #000}
+#nav{position:absolute;left:50%;top:max(10px,env(safe-area-inset-top));transform:translateX(-50%);background:rgba(10,40,90,.78);padding:4px 12px;border-radius:6px;font-weight:800;font-size:15px;display:none;white-space:nowrap}#nav.on{display:block}
+#iAeb{position:absolute;left:50%;top:38%;transform:translateX(-50%);background:#d23;color:#fff;font-weight:900;font-size:22px;padding:6px 18px;border-radius:6px;display:none}#iAeb.on{display:block}
+#gear.rev{color:#fff;background:#d23;padding:0 6px;border-radius:3px;font-size:18px}
+.tb.rev{background:rgba(220,40,40,.75);border-color:#fff}
+#map{z-index:6;background:#111;flex-direction:column}#mapC{position:absolute;inset:0;width:100%;height:100%;touch-action:none}
+.mapbar{position:absolute;left:0;right:0;bottom:calc(8px + env(safe-area-inset-bottom));display:flex;gap:8px;justify-content:center;align-items:center;flex-wrap:wrap;font-size:13px;text-shadow:0 1px 2px #000}
 #toast{position:absolute;left:50%;top:22%;transform:translateX(-50%);background:var(--pan);padding:8px 14px;border-radius:4px;font-weight:700;opacity:0;transition:opacity .3s;white-space:nowrap}
 #toast.on{opacity:1}
 /* タッチ操作 */
@@ -70,6 +77,7 @@ select,input[type=range]{width:100%;font:inherit;font-size:16px;min-height:36px;
 .tops{position:absolute;right:max(10px,env(safe-area-inset-right));top:max(10px,env(safe-area-inset-top));display:flex;gap:6px;pointer-events:auto;flex-wrap:wrap;justify-content:flex-end;max-width:62vw}
 .tops .tb{position:static;width:auto;min-width:46px;height:44px;padding:0 10px;font-size:13px;border-radius:8px}
 @media (orientation:portrait){#spd{bottom:calc(160px + env(safe-area-inset-bottom))}#info{left:max(150px,calc(env(safe-area-inset-left) + 150px));max-width:calc(100vw - 160px)}.tops{top:150px;max-width:none;left:10px;right:10px;justify-content:flex-start}}
+#bench{z-index:5;background:rgba(0,0,0,.4)}
 #load{flex-direction:column;gap:12px;background:#000}
 #load .bar{width:min(320px,80vw);height:6px;background:#222;border-radius:3px;overflow:hidden}#load .bar i{display:block;height:100%;width:0;background:var(--amb);transition:width .2s}
 #err{color:#ff8a7a;max-width:90vw;text-align:center}
@@ -90,7 +98,7 @@ select,input[type=range]{width:100%;font:inherit;font-size:16px;min-height:36px;
     <button id="mSettings">SETTINGS</button>
     <button id="mHow">HOW TO PLAY</button>
   </div>
-  <div class="note">開発版 v0.2（約4km四方：市街地・郊外・河川・田園・峠）／ 横画面推奨</div>
+  <div class="note">開発版 v0.4（約4km四方：市街地・郊外・河川・田園・峠）／ 横画面推奨</div>
 </div>
 
 <div id="select" class="scr">
@@ -98,8 +106,9 @@ select,input[type=range]{width:100%;font:inherit;font-size:16px;min-height:36px;
     <h2>VEHICLE SELECT　ダイハツ ミライース</h2>
     <div class="chips" id="chips"></div>
     <div class="cname" id="cname"></div>
+    <div class="drv"><label>運転者</label><select id="dAge"><option value="0">若年</option><option value="1">中年</option><option value="2">シニア</option></select><select id="dSex"><option value="0">男性</option><option value="1">女性</option></select><select id="dOut"><option value="0">カジュアル</option><option value="1">スーツ</option><option value="2">作業着</option></select></div>
     <div class="btns"><button id="selBack">もどる</button><button id="selOk" class="pri">この色で決定</button></div>
-    <div class="small">※車両はローポリの仮モデルです（実車ロゴ・エンブレムなし）</div>
+    <div class="small">※車両はローポリの仮モデルです（実車ロゴ・エンブレムなし）。運転者は18通りから選べます</div>
   </div>
 </div>
 
@@ -111,16 +120,20 @@ select,input[type=range]{width:100%;font:inherit;font-size:16px;min-height:36px;
     <div class="row"><label for="sWeather">天候</label><select id="sWeather"><option value="auto">自動で変化</option><option value="clear">晴れ</option><option value="cloudy">曇り</option><option value="rain">雨</option></select></div>
     <div class="row"><label for="sCamD">カメラ距離</label><input type="range" id="sCamD" min="3.5" max="10" step="0.1"></div>
     <div class="row"><label for="sCamH">カメラ高さ</label><input type="range" id="sCamH" min="1.2" max="4" step="0.1"></div>
-    <div class="row"><label for="sNpc">NPC台数</label><select id="sNpc"><option value="20">20台</option><option value="30">30台</option><option value="40">40台</option></select></div>
+    <div class="row"><label for="sNpc">交通量</label><select id="sNpc"><option value="0.7">少なめ（×0.7）</option><option value="1">標準（×1.0）</option><option value="1.2">多め（×1.2）</option></select></div>
+    <div class="row"><label for="sAeb">衝突被害軽減ブレーキ</label><select id="sAeb"><option value="1">ON</option><option value="0">OFF</option></select></div>
+    <div class="row"><label for="sAmb">環境音・夕方のチャイム</label><select id="sAmb"><option value="1">ON</option><option value="0">OFF</option></select></div>
     <div class="row"><label for="sAuto">性能自動調整</label><select id="sAuto"><option value="1">ON（重いと台数・解像度を下げる）</option><option value="0">OFF</option></select></div>
     <div class="row"><label for="sDraw">描画距離</label><input type="range" id="sDraw" min="200" max="650" step="10"></div>
+    <div class="row"><label for="sDet">細部の表示距離</label><input type="range" id="sDet" min="120" max="500" step="10"></div>
     <div class="row"><label for="sRes">解像度</label><input type="range" id="sRes" min="0.5" max="1" step="0.05"></div>
     <div class="row"><label for="sBgm">BGM</label><select id="sBgm"><option value="auto">自動（場所・時間・天気）</option><option value="pop">Minase City Pop（昼の街）</option><option value="night">Midnight Bypass（夜）</option><option value="rain">Rainy Window（雨）</option><option value="euro">Minase Touge Beat（峠）</option><option value="country">Sunday Countryside（田園）</option><option value="off">OFF</option></select></div>
     <div class="row"><label for="sBgmVol">BGM音量</label><input type="range" id="sBgmVol" min="0" max="1" step="0.05"></div>
     <div class="row"><label for="sVol">効果音量</label><input type="range" id="sVol" min="0" max="1" step="0.05"></div>
     <div class="row"><label for="sAssist">運転アシスト</label><select id="sAssist"><option value="1">ON（横滑りを抑える）</option><option value="0">OFF</option></select></div>
     <div class="row"><label for="sDbg">情報表示</label><select id="sDbg"><option value="0">OFF</option><option value="1">ON（FPS・描画数）</option></select></div>
-    <div class="btns"><button id="setBack" class="pri">もどる</button></div>
+    <div class="btns"><button id="sBench">性能測定（約50秒）</button><button id="sReset">セーブデータを消去</button><button id="setBack" class="pri">もどる</button></div>
+    <div class="small">性能測定は8か所を自動で回り、フレームレートを記録します。結果はコピーして共有できます。</div>
   </div>
 </div>
 
@@ -154,19 +167,23 @@ select,input[type=range]{width:100%;font:inherit;font-size:16px;min-height:36px;
   </div>
 </div>
 
+<div id="bench" class="scr"><div class="panel"><h2>性能測定の結果</h2><pre id="benchOut" style="white-space:pre-wrap;font-size:13px;user-select:text;-webkit-user-select:text"></pre><div class="btns"><button id="benchCopy" class="pri">結果をコピー</button><button id="benchClose">閉じる</button></div></div></div>
 <div id="hud">
   <canvas id="mm" width="260" height="260"></canvas>
   <div id="info"><div class="d" id="iDist"></div><div id="iTime"></div></div>
   <div id="spd"><div class="v" id="sV">0</div><div class="u">km/h</div><div id="rpm"><i id="rpmI"></i></div>
     <div id="ind"><b id="iWL">◀</b><b id="iLight">ライト</b><b id="gear">D</b><b id="iWR">▶</b></div></div>
+  <div id="nav"></div>
+  <div id="iAeb">ブレーキ!</div>
   <div id="dbg"></div>
   <div id="toast"></div>
 </div>
+<div id="map" class="scr"><canvas id="mapC"></canvas><div class="mapbar"><span id="mapMsg">地図をドラッグで移動・ピンチ/ホイールで拡大。タップで目的地を設定</span><button id="mapClear">目的地を消す</button><button id="mapClose" class="pri">閉じる</button></div></div>
 
 <div id="touch">
   <div class="tb" id="bL">◀</div><div class="tb" id="bR">▶</div>
   <div class="tb" id="bB">ブレーキ</div><div class="tb" id="bA">アクセル</div>
-  <div class="tops"><div class="tb" id="tBgm">BGM</div><div class="tb" id="tCam">視点</div><div class="tb" id="tLight">ライト</div><div class="tb" id="tWL">◁</div><div class="tb" id="tWR">▷</div><div class="tb" id="tRev">R</div><div class="tb" id="tHorn">ホーン</div><div class="tb" id="tMenu">II</div></div>
+  <div class="tops"><div class="tb" id="tBgm">BGM</div><div class="tb" id="tCam">視点</div><div class="tb" id="tLight">ライト</div><div class="tb" id="tWL">◁</div><div class="tb" id="tWR">▷</div><div class="tb" id="tRev">R</div><div class="tb" id="tHorn">ホーン</div><div class="tb" id="tMap">地図</div><div class="tb" id="tMenu">II</div></div>
 </div>
 
 <script type="module" src="src/main.js"></script>
