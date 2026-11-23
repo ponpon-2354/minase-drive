@@ -1,9 +1,9 @@
 // v0.4 追加：田園の作り直し（区画・畦・用水路・ため池・果樹園・茶畑・ビニールハウス・無人販売所・農道・軽トラ巡回）、
 // 桜並木、墓地、工事現場、建築中・解体中の家、公園の小物、電話ボックス・案内図・掲示板・駐輪場、雑草・落ち葉、水たまり、
 // 歩行者用信号、建物の影・遠景シルエット用データ
-import { L } from './textures.js?v=0.6.2';
-import { rng, clamp } from './math.js?v=0.6.2';
-import { MODELS, pickModel, pickColor } from './carmodels.js?v=0.6.2';
+import { L } from './textures.js?v=0.7.0';
+import { rng, clamp } from './math.js?v=0.7.0';
+import { MODELS, pickModel, pickColor } from './carmodels.js?v=0.7.0';
 
 const GRASS = { c: [0.5, 0.62, 0.36], lay: 0 };
 export function cherry(gb, x, z, R, s = 1) { // 桜（春の花の色）
@@ -141,7 +141,7 @@ export function cemetery(city, cx, cz) {
     g.s.box(cx - 18, 0, cz - 12.3, cx + 18, 1.2, cz - 12, { c: [0.7, 0.7, 0.68] }); g.s.box(cx - 18, 0, cz + 12, cx + 18, 1.2, cz + 12.3, { c: [0.7, 0.7, 0.68] });
     for (let i = 0; i < 9; i++) for (let j = 0; j < 6; j++) { const x = cx - 15 + i * 3.6, z = cz - 9 + j * 3.4, Rs = rng(i * 31 + j), c = 0.45 + Rs() * 0.3; g.s.box(x - 0.6, 0, z - 0.6, x + 0.6, 0.35, z + 0.6, { c: [0.62, 0.62, 0.6] }); g.s.box(x - 0.32, 0.35, z - 0.22, x + 0.32, 1.35 + Rs() * 0.3, z + 0.22, { c: [c, c, c * 1.02] }); }
     g.s.box(cx - 7, 0, cz - 28, cx + 7, 4.2, cz - 17, { c: [0.6, 0.45, 0.3] }); g.s.gable(cx - 7, cz - 28, cx + 7, cz - 17, 4.2, 4.2, { c: [0.28, 0.3, 0.32], lay: L.KAWARA, tw: 2, gc: [0.6, 0.45, 0.3] }, 1.4);
-    g.s.panel(cx - 3, cz - 16.9, cx + 3, cz - 16.9, 4.4, 5.9, 0.01, [0, 0, 1], { c: [1, 1, 1], mat: 16, lay: L.SG_TEMPLE });
+    g.s.panel(cx - 3, cz - 16.9, cx + 3, cz - 16.9, 2.7, 4.0, 0.01, [0, 0, 1], { c: [1, 1, 1], mat: 16, lay: L.SG_TEMPLE });
   });
 }
 // 農協のカントリーエレベーター（籾の貯蔵施設）と直売所

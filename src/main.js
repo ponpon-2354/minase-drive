@@ -1,29 +1,40 @@
 // 水瀬市ドライブ：メインループ・カメラ・時間/天候・UI・入力
-import { Renderer } from './renderer.js?v=0.6.2';
-import { City } from './city.js?v=0.6.2';
-import { GB } from './geo.js?v=0.6.2';
-import { M4, clamp, lerp, rng } from './math.js?v=0.6.2';
-import { buildPlayerCar, MIRA_COLORS, MODELS, VARIATIONS, buildHull, buildMiraNPC, tractorDef, buildTrailer } from './carmodels.js?v=0.6.2';
-import { Player } from './player.js?v=0.6.2';
-import { Traffic } from './traffic.js?v=0.6.2';
-import { Sound, Music, TRACKS } from './audio.js?v=0.6.2';
-import { saveGame, loadGame, clearSave } from './save.js?v=0.6.2';
-import { L, plateUV, renderLayer } from './textures.js?v=0.6.2';
-import { installNav } from './nav.js?v=0.6.2';
-import { districtCoverage } from './districts.js?v=0.6.2';
-import { buildPerson, buildDriver, buildBike, buildMoto, Peds, AGES, SEXES, OUTFITS, buildHands, buildStanding } from './people.js?v=0.6.2';
-import { BIKE_M, MOTO_M } from './traffic.js?v=0.6.2';
+import { Renderer } from './renderer.js?v=0.7.0';
+import { City, auditGround, auditLaneBlock } from './city.js?v=0.7.0';
+import { GB } from './geo.js?v=0.7.0';
+import { M4, clamp, lerp, rng } from './math.js?v=0.7.0';
+import { buildPlayerCar, MIRA_COLORS, MODELS, VARIATIONS, buildHull, buildMiraNPC, tractorDef, buildTrailer } from './carmodels.js?v=0.7.0';
+import { Player } from './player.js?v=0.7.0';
+import { Traffic } from './traffic.js?v=0.7.0';
+import { Sound, Music, TRACKS } from './audio.js?v=0.7.0';
+import { saveGame, loadGame, clearSave } from './save.js?v=0.7.0';
+import { L, plateUV, renderLayer } from './textures.js?v=0.7.0';
+import { installNav, LABELS as MAP_LABELS } from './nav.js?v=0.7.0';
+import { districtCoverage } from './districts.js?v=0.7.0';
+import { buildPerson, buildDriver, buildBike, buildMoto, Peds, AGES, SEXES, OUTFITS, buildHands, buildStanding } from './people.js?v=0.7.0';
+import { BIKE_M, MOTO_M } from './traffic.js?v=0.7.0';
+import { LongDrive, START_MIN, hhmm, dur, fatigueStage } from './longdrive.js?v=0.7.0';
+import { Cutscene } from './cutscene.js?v=0.7.0';
+import { LDSetup, renderClear } from './ld_ui.js?v=0.7.0';
+import { buildChar, buildPassengersInCar, driverChar, SEASON_NAMES } from './passengers.js?v=0.7.0';
+import { loadLD, getClears } from './save.js?v=0.7.0';
+// v0.7.0 長距離ドライブ：LD（進行中のドライブ）、cut（再生中のムービー）、ldSetup（設定画面）
+let LD = null, cut = null, ldSetup = null, ldPrev = null, ldSv = null, mmLabels = null;
 
 const $ = id => document.getElementById(id);
 const MOBILE = matchMedia('(pointer:coarse)').matches;
 const npcDraw = { near300: 0, drawn300: 0 };
-let accelHold = null, rBeepT = 0; // 修正82：周辺300m以内の交通車両数と、実際に描いた数
+let accelHold = null, keyHold = null, keyKeepT = 0, rBeepT = 0, spdHist = [];
+// 速度キープに入れる条件（タッチ・キー共通）：Dで5km/h超、直近0.5秒の加速度が1.5m/s²未満（ゆるやかな加速中でもよい）
+// 加速度はゲーム内時間で測る（処理落ちで実時間とずれても正しく判定）
+function keepCond() { const now = T; spdHist.push([now, player.vx]); while (spdHist.length > 2 && now - spdHist[0][0] > 0.5) spdHist.shift(); const h0 = spdHist[0], dt = now - h0[0], acc = dt > 0.25 ? (player.vx - h0[1]) / dt : 0; return player.kmh > 5 && player.gear === 'D' && acc < 1.5 && player.input.brk < 0.05; }
+function engageKeep() { player.cruiseV = player.vx; toast(`速度キープ ${Math.round(player.kmh)}km/h（ブレーキ・スライド・Rで解除）`, 1600); snd.beep(1100, 0.05, 2); const el = $('bA'); el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 700); } // 修正82：周辺300m以内の交通車両数と、実際に描いた数
 const S = { det: MOBILE ? 240 : 300, camD: 5.6, camH: 2.2, npc: 1, auto: 1, draw: MOBILE ? 320 : 380, res: MOBILE ? 0.75 : 0.85, vol: 0.7, assist: 1, dbg: 0, flow: 1, weather: 'auto', bgm: 'auto', bgmVol: 0.5, aeb: 1, amb: 1, lim: 0, ac: 0, is: 1 };
 const S0 = { ...S };
 const DEV = new URLSearchParams(location.search).has('dev');
 const START = { x: -60, z: -379.9, yaw: Math.PI / 2 };
 // ワープ先：座標は目安。実際の出現位置は lanePos() で最寄り道路の左端車線に合わせる
-const WARPS = [['駅前（スタート地点）', -60, -379.9, Math.PI / 2], ['国道ロードサイド（片側3車線）', 620, -8, Math.PI / 2], ['バイパス（高架の手前）', 1005, -420, 0], ['みなせ峠 入口', -501, -1020, Math.PI], ['道の駅 みなせ峠', 'pad'], ['水瀬川の橋', 2, 470, 0], ['田園地帯', -998, 1300, 0], ['水瀬工業団地', -1700, -5, Math.PI / 2], ['郊外住宅地', -998, -760, 0], ['本町通り（旧路面電車通り・片側3車線）', -300, 6, -Math.PI / 2], ['学園地区（水瀬大学前）', 250, 1252, Math.PI / 2], ['ニュータウン（若葉台）', 1120, 1333, Math.PI / 2]];
+const WARPS = [['駅前（スタート地点）', -60, -379.9, Math.PI / 2], ['国道ロードサイド（片側3車線）', 620, -8, Math.PI / 2], ['バイパス（高架の手前）', 1005, -420, 0], ['みなせ峠 入口', -501, -1020, Math.PI], ['道の駅 みなせ峠', 'pad'], ['水瀬川の橋', 2, 470, 0], ['田園地帯', -998, 1300, 0], ['水瀬工業団地', -1700, -5, Math.PI / 2], ['郊外住宅地', -998, -760, 0], ['本町通り（旧路面電車通り・片側3車線）', -300, 6, -Math.PI / 2], ['学園地区（水瀬大学前）', 250, 1252, Math.PI / 2], ['ニュータウン（若葉台）', 1120, 1333, Math.PI / 2], ['水瀬駅 北口（ホームの電車が見える）', 40, -504.9, Math.PI / 2]];
 let color = 0, state = 'load', R, city, player, traffic, snd, music, car = {}, npcMesh = [], npcLod = [], meshes = {};
 let gameMin = 7 * 60 + 30, weather = 'clear', wetK = 0, cloudK = 0, rainK = 0, weatherT = 240;
 let camMode = 0, cam = { p: [0, 50, 0], look: [0, 0, 0] }, lightMode = 0, wink = 0, winkYaw = 0, horn = false, T = 0;
@@ -31,6 +42,7 @@ let perfT = 0, perfN = 0, perfK = 1, resK = 1, lastSave = 0, distName = '', selY
 let rebuildDriver = () => { }, driver = { age: 1, sex: 0, outfit: 0 }, peds = null, pedMesh = [];
 const odo = { real: 0, disp: 0 }; // 速度表示の検証用（実移動距離と表示速度の積分）
 let gSpd = 0, lastPos = null, tunK = 0, errN = 0, chimeDone = -1, nav = null, mmZoom = 1;
+const trainNote = {}, trainStop = {};
 const keys = {}, touch = {};
 
 // トースト：重なったときは順番に表示（同じ文言は連続させない）
@@ -45,7 +57,7 @@ function toastNext() {
   toast.busy = true; toast.cur = q[0]; el.textContent = q[0]; el.classList.add('on');
   clearTimeout(toast.h); toast.h = setTimeout(toastNext, toastQ.length ? Math.min(q[1], 1200) : q[1]);
 }
-function show(id) { for (const s of ['load', 'title', 'select', 'settings', 'howto', 'pause', 'map']) $(s).classList.toggle('on', s === id); }
+function show(id) { for (const s of ['load', 'title', 'select', 'settings', 'howto', 'pause', 'map', 'ldset', 'ldclear']) $(s).classList.toggle('on', s === id); }
 const frame = () => new Promise(r => requestAnimationFrame(r));
 
 // ---------------- 起動 ----------------
@@ -55,7 +67,7 @@ async function boot() {
     R = new Renderer($('gl'));
     bar.style.width = '15%'; msg.textContent = '道路ネットワークと街区を生成中…'; await frame();
     city = new City();
-    for (const d of city.dyn || []) R.setLayer(d.lay, renderLayer(d.draw)); R.mips(); // 案内標識・電停名・橋名板
+    for (const d of city.dyn || []) R.setLayer(d.lay, renderLayer(d.draw)); R.mips(); // 案内標識・橋名板
     bar.style.width = '45%'; msg.textContent = '車両モデル（50車種）を生成中…'; await frame();
     for (const m0 of MODELS) { const m = m0.semi ? tractorDef(m0) : m0; const g = new GB(); buildHull(m, g, { lod: 0 }); npcMesh[m.id] = R.mesh(g.build()); const g1 = new GB(); buildHull(m, g1, { lod: 1 }); npcLod[m.id] = R.mesh(g1.build()); if (m0.semi) { const t0 = new GB(); buildTrailer(t0, m0, 0); meshes.trailer = R.mesh(t0.build()); const t1 = new GB(); buildTrailer(t1, m0, 1); meshes.trailerLod = R.mesh(t1.build()); } }
     const pc = buildPlayerCar(); car.def = pc;
@@ -76,7 +88,15 @@ async function boot() {
       const ft = city.farTerrain && city.farTerrain.get(ch); if (ft) ft(gt);
       if (g.count) ch.far = R.mesh(g.build()); if (gt.count) ch.farT = R.mesh(gt.build());
     }
-    meshes.blob = R.mesh((() => { const g = new GB(); g.flat(-0.5, -0.5, 0.5, 0.5, 0.04, { c: [0, 0, 0], mat: 5 }); return g.build(); })());
+    // 修正97-3：車の接地影は黒い長方形ではなく、角の丸い形で縁がぼける影（中心が濃く、外周で0になる）
+    meshes.blob = R.mesh((() => { const g = new GB(), N = 28, P = (k, sc) => { const a = k / N * Math.PI * 2, c = Math.cos(a), s = Math.sin(a); return [0.5 * sc * Math.sign(c) * Math.abs(c) ** 0.5, 0.04, 0.5 * sc * Math.sign(s) * Math.abs(s) ** 0.5]; };
+      const dark = { c: [1, 1, 1], mat: 26 };
+      for (let k = 0; k < N; k++) { const a0 = P(k, 0.78), a1 = P(k + 1, 0.78), b0 = P(k, 1.06), b1 = P(k + 1, 1.06);
+        g.tri([0, 0.04, 0], a1, a0, dark, [0, 0], [0, 0], [0, 0], [0, 1, 0]);
+        g.tri(a0, a1, b1, dark, [0, 0], [0, 0], [0, 0], [0, 1, 0]); g.tri(a0, b1, b0, dark, [0, 0], [0, 0], [0, 0], [0, 1, 0]);}
+      // 外周（b0/b1）の頂点の濃さを0にする
+      const a = g.a; for (let i = 0; i < a.length; i += 13) { const r = Math.hypot(a[i] / 0.5, a[i + 2] / 0.5); if (r > 0.95) { a[i + 6] = 0; a[i + 7] = 0; a[i + 8] = 0; } }
+      return g.build(); })());
     meshes.stars = R.mesh(starGeo()); meshes.clouds = R.mesh(cloudGeo()); meshes.ped = R.mesh(pedSigGeo()); meshes.puff = R.mesh((() => { const g = new GB(); g.quadN([-1, -1, 0], [1, -1, 0], [1, 1, 0], [-1, 1, 0], [0, 0, 1], { c: [0.85, 0.85, 0.85], mat: 25, lay: L.CLOUD }, [[0, 1], [1, 1], [1, 0], [0, 0]]); return g.build(); })());
     meshes.global = R.mesh(city.global.build()); meshes.gdecal = R.mesh(city.globalDecal.build());
     meshes.mtn = R.mesh(city.mountains.build()); meshes.train = R.mesh(city.trainGeo.build());
@@ -99,9 +119,14 @@ async function boot() {
     buildMinimap();
     initUI();
     $('mContinue').hidden = !sv;
+    ldSv = await loadLD(); $('mLDCont').hidden = !(ldSv && ldSv.cfg && ldSv.st && ldSv.st.phase !== 'clear');
+    if (ldSv && !$('mLDCont').hidden) $('mLDCont').textContent = `長距離ドライブのつづき（${SEASON_NAMES[ldSv.cfg.season] || ''}・${hhmm(ldSv.min || 540)}）`;
     show('title'); state = 'title';
+    { let nx = null; try { nx = JSON.parse(sessionStorage.getItem('ldNext') || 'null'); sessionStorage.removeItem('ldNext'); } catch (e) { /* none */ } // クリア画面の「同じ季節でもう一度」「別の季節で」
+      if (nx && nx.cfg) { if (nx.same) startLD(nx.cfg, null); else openLDSet({ ...nx.cfg, otherSeason: true }); } }
     console.log('city stats', city.stats, 'lotsAI', city.stats.lotsAI, 'aabbs', city.aabbs.length, 'variations', VARIATIONS);
-    if (DEV) window.G = { M4, meshes, perf: (p, r) => { perfK = p; resK = r; S.auto = false; }, perfV: () => [perfK, resK], trains: t => trains(t ?? T), T: () => T, peds: () => peds, car, odo, hist: () => loop.hist, prof: () => streamChunks.prof, models: MODELS, get player() { return player; }, get traffic() { return traffic; }, city, S, R, setCam: m => { camMode = m; }, setTime: h => { gameMin = h * 60; }, setWeather: w => { S.weather = w; weather = w; }, tp: (x, z, yaw) => player.reset(x, z, yaw, 1000), warp: i => doWarp(i), nav: () => nav, gSpd: () => gSpd, state: () => state, sel: () => openSelect('title'), stats: () => ({ fps: tick.fps, ms: loop.ms, draws: R.stats.draws, tris: R.stats.tris, npc: traffic.cars.length, target: traffic.target, parked: traffic.stats.parkedNow, chunks: city.chunks.filter(c => c.m).length, npcNear300: npcDraw.near300, npcDrawn300: npcDraw.drawn300 }), cityStats: () => ({ ...city.stats, dockSlots: city.lots.filter(l => l.truck).reduce((t, l) => t + l.slots.length, 0), dockFree: city.lots.filter(l => l.truck).reduce((t, l) => t + l.slots.filter(q => q.occ !== 'static').length, 0), dockLotsOnRoad: city.lots.filter(l => l.truck && l.edge).length }), coverage: () => districtCoverage(city) };
+    if (DEV) window.G = { M4, meshes, auditGround: (st = 5) => auditGround(city, st), auditLaneBlock: (st = 2) => auditLaneBlock(city, st), perf: (p, r) => { perfK = p; resK = r; S.auto = false; }, perfV: () => [perfK, resK], trains: t => trains(t ?? T), T: () => T, peds: () => peds, car, odo, hist: () => loop.hist, prof: () => streamChunks.prof, models: MODELS, get player() { return player; }, get traffic() { return traffic; }, get city() { return city; }, get LD() { return LD; }, get cut() { return cut; }, startLD: (cfg, sv) => startLD(cfg, sv), cutTest: (kind, season, n, type = 'SA') => { const ps = [{ ch: driverChar(driver, season), role: 'driver', name: 'あなた' }, { ch: { sex: 1, age: '30', outfit: 'casual', seed: 21 }, role: 'p1', name: '30代女性' }, { ch: { sex: 0, age: n === 3 ? 'child' : '60', outfit: n === 3 ? 'kids' : 'coat', seed: 28 }, role: 'p2', name: n === 3 ? '男の子' : '60代男性' }].slice(0, n);
+      startMovie(kind, { season, party: ps, fac: { id: 'x', type, name: { SA: 'テストSA', PA: 'テストPA', MICHI: '道の駅 テスト' }[type] }, from: 600, to: 645 }, () => { state = 'title'; show('title'); }); }, ldTo: (s, u = 6.1) => { const q = LD.poseAtS(s, u); player.reset(q.x, q.z, q.yaw, q.y + 1); lastPos = null; cam.mode = -1; LD.lastPos = null; }, ldset: p => openLDSet(p), setMin: m => { gameMin = m; }, S, R, setCam: m => { camMode = m; }, setTime: h => { gameMin = h * 60; }, setWeather: w => { S.weather = w; weather = w; }, tp: (x, z, yaw) => player.reset(x, z, yaw, 1000), warp: i => LD ? null : doWarp(i), nav: () => nav, gSpd: () => gSpd, state: () => state, sel: () => openSelect('title'), stats: () => ({ fps: tick.fps, ms: loop.ms, draws: R.stats.draws, tris: R.stats.tris, npc: traffic.cars.length, target: traffic.target, parked: traffic.stats.parkedNow, chunks: city.chunks.filter(c => c.m).length, npcNear300: npcDraw.near300, npcDrawn300: npcDraw.drawn300 }), cityStats: () => ({ ...city.stats, dockSlots: city.lots.filter(l => l.truck).reduce((t, l) => t + l.slots.length, 0), dockFree: city.lots.filter(l => l.truck).reduce((t, l) => t + l.slots.filter(q => q.occ !== 'static').length, 0), dockLotsOnRoad: city.lots.filter(l => l.truck && l.edge).length }), coverage: () => districtCoverage(city) };
     requestAnimationFrame(loop);
   } catch (e) { console.error(e); $('err').textContent = 'エラー: ' + e.message + '（再読み込みしてください）'; }
 }
@@ -215,14 +240,26 @@ function initUI() {
   };
   hold('bL', 'left'); hold('bR', 'right'); hold('bB', 'brk'); hold('tHorn', 'horn');
   // 修正89：縦スライド式アクセル。下38%はエコ（開度20〜35%）、上へずらすほど加速（35〜100%）。指を1.5秒止めるとその速度をキープ
-  { const el = $('bA'), lv = $('bAlv'); let pid = null, y0 = 0, tStill = 0, moved = false;
+  // 修正100：速度キープの作動条件をゆるめ、作動までの進み具合を表示する
+  //  ・指を止める時間は1.0秒。止まっているとみなすブレはスライダーの高さの±8%（最低14px）
+  //  ・速度の条件は「急加速でないこと」（直近0.5秒の加速度が1.5m/s²未満）。作動した瞬間の速度をキープ
+  //  ・作動までの進み具合はアクセルの上端のバーで表示。作動時はボタンが点滅し、HUDに「キープ中 ◯◯km/h」
+  { const el = $('bA'), lv = $('bAlv'), kp = $('bAkp'); let pid = null, y0 = 0, tStill = 0;
     const setY = e => { const r = el.getBoundingClientRect(), f = clamp(1 - (e.clientY - r.top) / r.height, 0, 1); touch.thrV = f < 0.38 ? 0.2 + f / 0.38 * 0.15 : 0.35 + (f - 0.38) / 0.62 * 0.65; lv.style.height = (f * 100).toFixed(0) + '%'; return f; };
-    el.addEventListener('pointerdown', e => { e.preventDefault(); snd.init(); pid = e.pointerId; try { el.setPointerCapture(pid); } catch (_) { } touch.thr = true; el.classList.add('on'); if (player.cruiseV != null) { player.cruiseV = null; toast('速度キープを解除', 900); } y0 = e.clientY; tStill = performance.now(); moved = false; setY(e); });
-    el.addEventListener('pointermove', e => { if (e.pointerId !== pid) return; if (Math.abs(e.clientY - y0) > 7) { y0 = e.clientY; tStill = performance.now(); if (player.cruiseV != null) { player.cruiseV = null; toast('速度キープを解除', 900); } moved = true; } setY(e); });
-    const off = e => { if (e.pointerId !== pid) return; pid = null; touch.thr = false; touch.thrV = 0; el.classList.remove('on'); lv.style.height = '0'; };
+    const tol = () => Math.max(14, el.getBoundingClientRect().height * 0.08);
+    el.addEventListener('pointerdown', e => { e.preventDefault(); snd.init(); pid = e.pointerId; try { el.setPointerCapture(pid); } catch (_) { } touch.thr = true; el.classList.add('on'); if (player.cruiseV != null) { player.cruiseV = null; toast('速度キープを解除', 900); } y0 = e.clientY; tStill = performance.now(); setY(e); });
+    el.addEventListener('pointermove', e => { if (e.pointerId !== pid) return; if (Math.abs(e.clientY - y0) > tol()) { y0 = e.clientY; tStill = performance.now(); if (player.cruiseV != null) { player.cruiseV = null; toast('速度キープを解除', 900); } } setY(e); });
+    const off = e => { if (e.pointerId !== pid) return; pid = null; touch.thr = false; touch.thrV = 0; el.classList.remove('on'); lv.style.height = '0'; kp.style.width = '0'; el.classList.remove('arm'); };
     el.addEventListener('pointerup', off); el.addEventListener('pointercancel', off); el.addEventListener('lostpointercapture', off);
-    let hist = []; // 直近1.5秒の速度（加速中は速度キープにしない：全開で踏み続けても勝手に固定されない）
-    accelHold = () => { if (pid == null || player.cruiseV != null) { hist = []; return; } const now = performance.now(); hist.push([now, player.kmh]); while (hist.length && now - hist[0][0] > 1500) hist.shift(); const dv = hist.length ? Math.abs(player.kmh - hist[0][1]) : 99; if (now - tStill > 1500 && dv < 3 && player.kmh > 5 && player.gear === 'D') { player.cruiseV = player.vx; toast(`速度キープ ${Math.round(player.kmh)}km/h（ブレーキかスライドで解除）`, 1600); snd.beep(1100, 0.05, 2); } }; void moved; }
+    accelHold = () => {
+      const now = performance.now(), ok = keepCond();
+      if (pid == null || player.cruiseV != null) { kp.style.width = '0'; el.classList.remove('arm'); return; }
+      if (!ok) tStill = now; // 急加速中・ブレーキ中は待ち時間を数え直す
+      const prog = clamp((now - tStill) / 1000, 0, 1);
+      kp.style.width = (prog * 100).toFixed(0) + '%'; el.classList.toggle('arm', prog > 0.05);
+      if (prog >= 1) engageKeep(); }; }
+  // キーボードのKキーも同じ条件（速度が安定してから入る）。押した時点で条件を満たしていれば1.0秒後に作動
+  keyHold = () => { if (!keyKeepT) return; const now = performance.now(); if (player.cruiseV != null || player.gear !== 'D') { keyKeepT = 0; return; } if (!keepCond()) { keyKeepT = now; return; } if (now - keyKeepT >= 1000) { keyKeepT = 0; engageKeep(); } else if (now - keyKeepT > 8000) keyKeepT = 0; };
   const tap = (id, f) => $(id).addEventListener('pointerdown', e => { e.preventDefault(); snd.init(); f(); });
   tap('tBgm', cycleBgm); tap('tCam', cycleCam); tap('tLight', cycleLight); tap('tWL', () => setWink(-1)); tap('tWR', () => setWink(1)); tap('bDR', toggleRev); tap('tMenu', pause); tap('tMap', openMap);
   $('mm').style.pointerEvents = 'auto'; $('mm').addEventListener('pointerdown', e => { e.preventDefault(); mmZoom = (mmZoom + 1) % 3; toast('ミニマップ：' + ['標準', '広域', '詳細'][mmZoom], 900); });
@@ -231,8 +268,9 @@ function initUI() {
     keys[e.code] = true;
     if (state === 'drive') {
       if (e.code === 'KeyC') cycleCam(); if (e.code === 'KeyL') cycleLight(); if (e.code === 'KeyQ') setWink(-1); if (e.code === 'KeyE') setWink(1);
-      if (e.code === 'KeyR') toggleRev(); if (e.code === 'KeyK') { if (player.cruiseV != null) { player.cruiseV = null; toast('速度キープを解除', 900); } else if (player.kmh > 5 && player.gear === 'D') { player.cruiseV = player.vx; toast(`速度キープ ${Math.round(player.kmh)}km/h`, 1400); } } if (e.code === 'KeyM') cycleBgm(); if (e.code === 'Escape' || e.code === 'KeyP') pause(); if (e.code === 'KeyN') openMap();
-    } else if (state === 'pause' && e.code === 'Escape') resume();
+      if (e.code === 'KeyR') toggleRev(); if (e.code === 'KeyK') { if (player.cruiseV != null) { player.cruiseV = null; toast('速度キープを解除', 900); } else if (player.gear === 'D') { keyKeepT = performance.now(); toast('速度が安定したらキープします', 1100); } } if (e.code === 'KeyM') cycleBgm(); if (e.code === 'Escape' || e.code === 'KeyP') pause(); if (e.code === 'KeyN') openMap();
+    } else if (state === 'movie' && (e.code === 'Escape' || e.code === 'Enter' || e.code === 'Space')) { if (cut) cut.finish(); e.preventDefault(); }
+    else if (state === 'pause' && e.code === 'Escape') resume();
     else if (state === 'map' && (e.code === 'Escape' || e.code === 'KeyN')) closeMap();
     if (state === 'drive' && /Arrow|Space/.test(e.code)) e.preventDefault();
     snd.init();
@@ -256,6 +294,12 @@ function initUI() {
   // メニュー
   $('mStart').onclick = () => { snd.init(); if ($('mContinue').hidden) startDrive(); else { player.reset(START.x, START.z, START.yaw); startDrive(); } };
   $('mContinue').onclick = () => { snd.init(); startDrive(); };
+  $('mLD').onclick = () => { snd.init(); openLDSet(null); };
+  $('mLDCont').onclick = () => { snd.init(); if (ldSv) startLD(ldSv.cfg, ldSv); };
+  $('cutSkip').onclick = () => { if (cut) cut.finish(); };
+  $('ldcTitle').onclick = () => location.reload();
+  $('ldcSame').onclick = () => { try { sessionStorage.setItem('ldNext', JSON.stringify({ same: 1, cfg: LD.cfg })); } catch (e) { /* none */ } location.reload(); };
+  $('ldcOther').onclick = () => { try { sessionStorage.setItem('ldNext', JSON.stringify({ same: 0, cfg: LD.cfg })); } catch (e) { /* none */ } location.reload(); };
   $('mVehicle').onclick = () => openSelect('title');
   $('mSettings').onclick = () => openSettings('title');
   $('mHow').onclick = () => { show('howto'); prevState = 'title'; };
@@ -269,9 +313,9 @@ function initUI() {
   $('pResume').onclick = resume; $('pVehicle').onclick = () => openSelect('pause'); $('pSettings').onclick = () => openSettings('pause');
   $('pSave').onclick = async () => { const b = $('pSave'); b.disabled = true; b.textContent = 'セーブ中…'; const w = await doSave(true); b.disabled = false; b.textContent = 'セーブ'; toast(w === 'memory' ? 'セーブできませんでした（この端末では保存領域が使えません）' : 'セーブしました（' + w + '）', 2200); };
   $('sReset').onclick = async () => { const b = $('sReset'); if (!b.dataset.arm) { b.dataset.arm = 1; b.textContent = 'もう一度押すと消去'; setTimeout(() => { delete b.dataset.arm; b.textContent = 'セーブデータを消去'; }, 3000); return; } delete b.dataset.arm; b.textContent = 'セーブデータを消去'; await clearSave(); Object.assign(S, S0); color = 0; gameMin = 7 * 60 + 30; const w = warpPos(START.x, START.z, START.yaw); player.reset(w.x, w.z, w.yaw); openSettings(prevState); $('mContinue').hidden = true; toast('セーブデータを消去しました', 2000); };
-  $('pRespawn').onclick = () => { doWarp(+$('pWarp').value); resume(); };
+  $('pRespawn').onclick = () => { if (LD) { LD.rescue(player); clearAround(player.x, player.z); cam.mode = -1; lastPos = null; } else doWarp(+$('pWarp').value); resume(); };
   $('pWarp').innerHTML = WARPS.map((w, i) => `<option value="${i}">${w[0]}</option>`).join('');
-  $('pTitle').onclick = async () => { await doSave(true); $('mContinue').hidden = false; state = 'title'; show('title'); setHud(false); };
+  $('pTitle').onclick = async () => { await doSave(true); if (LD) { location.reload(); return; } $('mContinue').hidden = false; state = 'title'; show('title'); setHud(false); };
   $('err').addEventListener('pointerdown', () => { if (state !== 'load') { $('err').textContent = ''; errN = 0; } });
   // 色チップ
   $('chips').innerHTML = MIRA_COLORS.map((c, i) => `<button class="chip" data-i="${i}" style="background:${c.hex}" aria-label="${c.name}"></button>`).join('');
@@ -288,8 +332,9 @@ function openSettings(from) {
   $('sBgm').value = S.bgm; $('sBgmVol').value = S.bgmVol; $('sDraw').value = S.draw; $('sRes').value = S.res; $('sVol').value = S.vol; $('sAssist').value = String(S.assist); $('sDbg').value = String(S.dbg); $('sDet').value = S.det;
 }
 function applySettings() {
-  const t = $('sTime').value; if (t !== 'keep') gameMin = parseFloat(t) * 60;
-  S.flow = +$('sFlow').value; S.weather = $('sWeather').value; if (S.weather !== 'auto') weather = S.weather;
+  const t = $('sTime').value; if (t !== 'keep' && !LD) gameMin = parseFloat(t) * 60; // 長距離ドライブ中は時刻・天候を変えない（現実45分＝24時間の進行を守る）
+  S.flow = +$('sFlow').value; S.weather = $('sWeather').value; if (S.weather !== 'auto' && !LD) weather = S.weather;
+  if (music) music.kick(); // 修正97-7：時刻・天候を変えたらBGMをすぐ切り替える
   S.camD = +$('sCamD').value; S.camH = +$('sCamH').value; S.npc = +$('sNpc').value; S.auto = +$('sAuto').value; S.aeb = +$('sAeb').value; S.amb = +$('sAmb').value; S.lim = +$('sLim').value; S.ac = +$('sAc').value; S.is = +$('sIs').value;
   S.draw = +$('sDraw').value; S.res = +$('sRes').value; S.vol = +$('sVol').value; S.assist = +$('sAssist').value; S.dbg = +$('sDbg').value; S.det = +$('sDet').value;
   S.bgm = $('sBgm').value; S.bgmVol = +$('sBgmVol').value; music.mode = S.bgm; music.setVol(S.bgmVol);
@@ -309,11 +354,13 @@ function warpPos(x, z, yaw) {
   }
   if (!best || bd > 60) return { x, z, yaw };
   const e = best.e, k = e.lanes - 1;
-  let s = clamp(best.s, 8, e.len - 8);
+  // 修正97-6：左車線の中央に出す。細い1車線道路（峠道など）では中央線から少し離し、曲線では交差点の出口のすぐ先を避けて30m以上先に出す
+  const off = e.lanes === 1 && e.lw < 3.1 ? 0.3 : 0;
+  let s = clamp(best.s, e.straight ? 8 : Math.min(30, e.len / 2), e.len - 8);
   const blocked = (p) => [...city.query(p[0], p[1], 3)].some(b => b.kind !== 'x' && b.y1 > 0.3 && p[0] > b.x0 - 1.0 - 0.8 && p[0] < b.x1 + 1.0 + 0.8 && p[1] > b.z0 - 1.0 - 1.7 && p[1] < b.z1 + 1.0 + 1.7);
-  let p = city.lanePos(e, k, s);
-  const blockedAhead = s0 => [0, 2.5, 5, 7.5].some(a => blocked(city.lanePos(e, k, Math.min(e.len - 1, s0 + a)))); // 前方5m以内も空いていること
-  for (let tries = 0; tries < 16 && blockedAhead(s); tries++) { s = clamp(s + 4, 8, e.len - 12); p = city.lanePos(e, k, s); }
+  let p = city.lanePos(e, k, s, off);
+  const blockedAhead = s0 => [0, 2.5, 5, 7.5].some(a => blocked(city.lanePos(e, k, Math.min(e.len - 1, s0 + a), off))); // 前方5m以内も空いていること
+  for (let tries = 0; tries < 16 && blockedAhead(s); tries++) { s = clamp(s + 4, 8, e.len - 12); p = city.lanePos(e, k, s, off); }
   return { x: p[0], z: p[1], yaw: city.headAt(e, s), y: city.yAt(e, s) };
 }
 function clearAround(x, z, r = 6) { for (const c of traffic.cars.slice()) if (!c.persist && (c.x - x) ** 2 + (c.z - z) ** 2 < r * r) traffic.remove(c); }
@@ -358,10 +405,10 @@ function finishBench() {
   $('benchOut').textContent = txt; $('bench').classList.add('on');
 }
 function startDrive() { state = 'drive'; show(null); setHud(true); markToggles(); toast('水瀬市へようこそ　' + MIRA_COLORS[color].name + ' のミライース'); }
-function openMap() { if (state !== 'drive') return; state = 'map'; show('map'); setHud(false); nav.open(MM, MMX0, MMZ0, MMS); }
+function openMap() { if (state !== 'drive') return; state = 'map'; show('map'); setHud(false); $('mapClear').hidden = !!LD; $('mapMsg').textContent = LD ? '長距離ドライブの路線図（休憩施設と目的地）' : '地図をドラッグで移動・ピンチ/ホイールで拡大。タップで目的地を設定'; nav.open(MM, MMX0, MMZ0, MMS); }
 function closeMap() { nav.close(); state = 'drive'; show(null); setHud(true); }
 function pause() { if (state !== 'drive') return; state = 'pause'; show('pause'); setHud(false); pauseInfo(); }
-function pauseInfo() { const h = Math.floor(gameMin / 60), m = Math.floor(gameMin % 60); $('pInfo').textContent = `現在地：${city.district(player.x, player.z)}　${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}　${{ clear: '晴れ', cloudy: '曇り', rain: '雨' }[weather]}\nNPC ${traffic.cars.length}台（駐車中 ${traffic.stats.parkedNow}）／ 車両データ ${MODELS.length}車種・${VARIATIONS}通り`; $('pInfo').style.whiteSpace = 'pre-line'; }
+function pauseInfo() { if (LD) { const st = LD.st; $('pInfo').textContent = `長距離ドライブ（${SEASON_NAMES[LD.season]}）　${hhmm(gameMin)}\n現在地：${city.district(player.x, player.z)}　目的地 ${LD.D.dest} まで ${LD.remainKm().toFixed(0)}km\n走行 ${st.totalKm.toFixed(1)}km ／ 運転 ${dur(st.driveMin)} ／ 連続 ${dur(st.contMin)}\n疲労度 ${st.fatigue.toFixed(0)}%（${fatigueStage(st.fatigue)[1]}）／ 休憩 ${st.rests}回`; $('pInfo').style.whiteSpace = 'pre-line'; return; } const h = Math.floor(gameMin / 60), m = Math.floor(gameMin % 60); $('pInfo').textContent = `現在地：${city.district(player.x, player.z)}　${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}　${{ clear: '晴れ', cloudy: '曇り', rain: '雨' }[weather]}\nNPC ${traffic.cars.length}台（駐車中 ${traffic.stats.parkedNow}）／ 車両データ ${MODELS.length}車種・${VARIATIONS}通り`; $('pInfo').style.whiteSpace = 'pre-line'; }
 function resume() { state = 'drive'; show(null); setHud(true); }
 const TOUCHUI = MOBILE || navigator.maxTouchPoints > 0 || 'ontouchstart' in window; // PC（マウス・キーボード）ではタッチ操作のボタンを出さない
 function setHud(on) { $('hud').classList.toggle('on', on); $('touch').classList.toggle('on', on && TOUCHUI); document.body.classList.toggle('pc', !TOUCHUI); }
@@ -404,12 +451,13 @@ function applySave(sv) {
 }
 async function doSave() {
   lastSave = T;
+  if (LD) return state === 'ldclear' ? 'clear' : LD.save(player); // 長距離ドライブは専用のセーブ（市街地のセーブは変えない）
   return saveGame({ v: 3, color, x: player.x, y: player.y, z: player.z, yaw: player.yaw, time: gameMin, weather, driver: { ...driver }, settings: { ...S }, at: Date.now() });
 }
 
 // ---------------- ミニマップ ----------------
 let MM;
-const MMX0 = -2100, MMZ0 = -2100, MMS = 0.32;
+let MMX0 = -2100, MMZ0 = -2100, MMS = 0.32;
 function buildMinimap() {
   const W = Math.ceil(4200 * MMS);
   MM = document.createElement('canvas'); MM.width = W; MM.height = W;
@@ -441,12 +489,17 @@ function drawMinimap() {
   c.fillStyle = '#ffffff';
   for (const n of traffic.cars) { c.fillRect((n.x - MMX0) * MMS - 0.8, (n.z - MMZ0) * MMS - 0.8, 1.6, 1.6); }
   // 信号（現在の状態）
-  for (const h of city.sigHeads) {
+  for (const h of city.sigHeads || []) {
     const dx = h.x - player.x, dz = h.z - player.z; if (dx * dx + dz * dz > 120 * 120) continue;
     const s = city.sig(h.node, h.axis, T); c.fillStyle = s === 'g' ? '#19c3a0' : s === 'y' ? '#ffb63a' : '#ff4b3a';
     c.fillRect((h.x - MMX0) * MMS - 0.7, (h.z - MMZ0) * MMS - 0.7, 1.4, 1.4);
   }
   c.restore();
+  // 修正97-5：ミニマップにも地名を表示（標準・広域のとき。文字は回転させずに読める向きで、画面上12〜13px相当）
+  if (mmZoom !== 2) { const a = Math.PI + player.yaw, ca = Math.cos(a), sa = Math.sin(a), fs = mmZoom === 1 ? 26 : 24;
+    c.save(); c.beginPath(); c.arc(W / 2, W / 2, W / 2 - 4, 0, 7); c.clip(); c.font = `800 ${fs}px sans-serif`; c.textAlign = 'center'; c.textBaseline = 'middle'; c.lineWidth = 5; c.strokeStyle = 'rgba(0,0,0,.75)'; c.fillStyle = '#ffe9b8';
+    for (const [n, x, z] of (mmLabels || MAP_LABELS)) { const lx = (x - player.x) * MMS * k, lz = (z - player.z) * MMS * k, sx = W / 2 + lx * ca - lz * sa, sy = W / 2 + lx * sa + lz * ca; if (Math.hypot(sx - W / 2, sy - W / 2) > W / 2 - 22) continue; c.strokeText(n, sx, sy); c.fillText(n, sx, sy); }
+    c.restore(); }
   c.fillStyle = '#ffb63a'; c.beginPath(); c.moveTo(W / 2, W / 2 - 12); c.lineTo(W / 2 - 8, W / 2 + 9); c.lineTo(W / 2, W / 2 + 4); c.lineTo(W / 2 + 8, W / 2 + 9); c.fill();
   c.fillStyle = '#fff'; c.font = '700 18px sans-serif'; c.textAlign = 'center';
   const a = Math.PI + player.yaw; // 北マーク（地図の回転に合わせて縁を回る）
@@ -472,10 +525,14 @@ function tick(dt) {
   R.resize(S.res * resK);
   const aspect = R.cv.width / R.cv.height;
   if (state === 'select') { renderSelect(dt, aspect); return; }
+  if (state === 'ldset') { renderLDSet(dt, aspect); return; }
+  if (state === 'movie' && cut) { cut.render(dt, aspect); if (snd.ok) snd.update({ rpm: 800, thr: 0, kmh: 0, brake: 0, slip: 0, rain: false, horn: false, npcNear: 0, cityK: 0, cockpit: false, engine: 0, amb: null }); return; }
+  if (state === 'ldclear') { tick.cl = (tick.cl || 0) + dt; }
   if (state === 'pause' && (tick.pi = (tick.pi || 0) + dt) > 0.5) { tick.pi = 0; pauseInfo(); }
   const driving = state === 'drive';
   // 時間
-  if (driving || state === 'title') { gameMin = (gameMin + dt * S.flow) % 1440; autoWeather(dt * S.flow); }
+  if (LD) { if (driving) gameMin = Math.min(1439, gameMin + dt * LD.flow); } // 長距離：現実1秒＝ゲーム内32/60分。天候は季節で固定
+  else if (driving || state === 'title') { gameMin = (gameMin + dt * S.flow) % 1440; autoWeather(dt * S.flow); }
   const env = envUniforms(driving || state === 'title' ? dt : 0);
   // トンネル：入口・出口で明るさを1.5秒かけて変える
   const inTunP = city.inTunnelXZ(player.x, player.z) && !!city.mtnRoadAt(player.x, player.z);
@@ -483,21 +540,25 @@ function tick(dt) {
   // 入力→物理
   if (driving) {
     const thr = (keys.ArrowUp || keys.KeyW) ? 1 : touch.thr ? (touch.thrV || 0.3) : 0, brk = (keys.ArrowDown || keys.KeyS || keys.Space || touch.brk) ? 1 : 0;
-    if (accelHold) accelHold();
+    if (accelHold) accelHold(); if (keyHold) keyHold();
     player.limiter = !!S.lim; player.ac = !!S.ac; player.isEnabled = !!S.is;
     const st = ((keys.ArrowLeft || keys.KeyA || touch.left) ? 1 : 0) - ((keys.ArrowRight || keys.KeyD || touch.right) ? 1 : 0);
     player.input = bench ? { thr: 0, brk: 1, steer: 0 } : { thr, brk, steer: st };
+    if (DEV && LD && window.G && G.ap) player.input = apInput(G.ap); // 開発用の自動運転（自己テスト：長距離の時間・休憩・到着の確認）
     horn = !!(keys.KeyH || touch.horn);
     player.aeb = S.aeb ? aebCheck() : 0;
     const n = Math.ceil(dt / 0.008), h = dt / n, wet = wetK * (1 - tunK);
     for (let i = 0; i < n; i++) player.step(h, { rain: wet > 0.5, wet }, traffic.cars);
     gearFeedback();
+    if (player.edgeHit && LD) { toast('コースの外には出られません', 1800); player.edgeHit = 0; }
     if (player.edgeHit) { toast(player.edgeHit === 2 ? '川には入れません。橋を渡ってください' : 'ここから先は水瀬市の外です。ハンドルを切るかバックで戻れます', 2200); player.edgeHit = 0; }
+    if (player.needRescue && LD) { player.needRescue = false; LD.rescue(player); clearAround(player.x, player.z); cam.mode = -1; lastPos = null; toast('動けなくなったので道路に戻しました', 2200); }
     if (player.needRescue) { player.needRescue = false; const w = warpPos(player.x, player.z, player.yaw); player.reset(w.x, w.z, w.yaw, (w.y || 0) + 1); clearAround(player.x, player.z); cam.mode = -1; lastPos = null; toast('動けなくなったので近くの道路に戻しました', 2200); }
     // 表示速度：位置の変化から求めた対地速度をなめらかにしたもの
     if (lastPos) { const dd = Math.hypot(player.x - lastPos[0], player.z - lastPos[1], (player.y - lastPos[2]) * 0.5), v = dd / Math.max(dt, 1e-3); gSpd += (Math.min(v, 80) - gSpd) * (1 - Math.exp(-dt * 6)); odo.real += dd; odo.disp += gSpd * dt; }
     lastPos = [player.x, player.z, player.y];
     nav.update(dt);
+    if (LD) LD.update(dt, player, gSpd);
     if (player.hit > 0.15) { snd.thump(player.hit * 0.6); player.hit = 0; } else player.hit *= 0.9;
     // ウインカー自動キャンセル
     if (wink && Math.abs(player.steer) < 0.05 && Math.abs(((player.yaw - winkYaw + 9 * Math.PI) % (2 * Math.PI)) - Math.PI) > 1.1) wink = 0;
@@ -543,8 +604,9 @@ function tick(dt) {
   if (tunK > 0) { const L2 = (a, b) => a + (b - a) * tunK; env.sunC = env.sunC.map(x => x * L2(1, 0.1)); env.amb = env.amb.map(x => x * L2(1, 0.45)); env.fog = env.fog.map(x => x * L2(1, 0.35)); }
   env.rainVis = rainK * (1 - tunK);
   if (music) {
-    const z = player.z, zc = city.zoneClass(player.x, player.z), rural = zc === 'farm';
-    const tr = music.update({ night: env.night > 0.6, rain: rainK > 0.5, mountain: z < -1050, rural }, driving || state === 'title');
+    const z = LD ? (zcMtn() ? -2000 : 0) : player.z, zc = city.zoneClass(player.x, player.z), rural = zc === 'farm';
+    // 修正97-7：雨は「降り具合（徐々に変わる）」ではなく現在の天気で判定し、時刻・天候の変更に即座に追随させる
+    const tr = music.update({ night: env.night > 0.6, rain: weather === 'rain', mountain: z < -1050, rural }, driving || state === 'title');
     if (tr !== tick.track) { tick.track = tr; if (tr && driving) toast('♪ ' + tr.name, 2200); }
   }
   const zc = city.zoneClass(cam.p[0], cam.p[2]), hr = env.hour;
@@ -566,8 +628,14 @@ function tick(dt) {
     if (player.bump > 0.08) { snd.bump(player.bump); player.bump = 0; }
     // R：車内のバックブザー「ピー、ピー」
     if (player.gear === 'R') { rBeepT -= dt; if (rBeepT <= 0) { snd.beep(2050, 0.32, 1); rBeepT = 0.75; } } else rBeepT = 0;
+    // 修正95：列車の走行音（一番近い列車との距離）と、駅の近くでの到着案内
+    if (!LD) { const tr = trains(T); let dmin = 1e9, vk = 0; for (const t of tr) { const cx = Math.max(t.x, Math.min(player.x, t.x + 82)), d = Math.hypot(cx - player.x, t.z - player.z, 10); if (d < dmin) { dmin = d; vk = t.stopped ? 0.15 : 1; } }
+      snd.train(Math.max(0, 1 - dmin / 260), vk);
+      if (Math.hypot(player.x - 100, player.z + 445) < 380) for (const t of tr) { const dn = t.dir > 0 ? '東行き' : '西行き';
+        if (!t.stopped && t.next < 20 && t.next > 0 && trainNote[t.dir] !== Math.round(T + t.next)) { trainNote[t.dir] = Math.round(T + t.next); snd.stationBell(); toast(`🚃 まもなく水瀬駅に${dn}の電車が到着します`, 3200); }
+        if (t.stopped && trainStop[t.dir] !== trainNote[t.dir]) { trainStop[t.dir] = trainNote[t.dir]; toast(`🚃 ${dn}の電車が水瀬駅に停車中（約10秒）`, 3000); } } }
     // 夕方5時のチャイム（防災無線）
-    if (S.amb && gameMin >= 1020 && gameMin < 1022 && chimeDone !== Math.floor(gameMin / 1440)) { chimeDone = Math.floor(gameMin / 1440); snd.chime(); toast('♪ 夕方5時のチャイム', 2500); }
+    if (S.amb && !LD && gameMin >= 1020 && gameMin < 1022 && chimeDone !== Math.floor(gameMin / 1440)) { chimeDone = Math.floor(gameMin / 1440); snd.chime(); toast('♪ 夕方5時のチャイム', 2500); }
     if (gameMin < 1000) chimeDone = -1;
     const b = (T % 0.8) < 0.4; if (wink && b !== tick.b) snd.tick(); tick.b = b;
     hud(env, lightsOn, b);
@@ -678,7 +746,7 @@ function drawWorld(env, planes, pM, lightsOn) {
   for (const c of vis) if (c.dd < detD) r.draw(c.m.lines);
   // 信号灯
   const T0 = T;
-  for (const h of city.sigHeads) {
+  for (const h of city.sigHeads || []) {
     const dx = h.x - cam.p[0], dz = h.z - cam.p[2]; if (dx * dx + dz * dz > 260 * 260) continue;
     if (!M4.sphereIn(planes, h.x, h.y, h.z, 1)) continue;
     const s = city.sig(h.node, h.axis, T0);
@@ -698,7 +766,9 @@ function drawWorld(env, planes, pM, lightsOn) {
   for (const w of city.workers || []) { const dx = w.x - cam.p[0], dz = w.z - cam.p[2]; if (dx * dx + dz * dz > 90 * 90) continue; r.draw(pedMesh[w.type][2], M4.trs(w.x, 0, w.z, w.yaw)); }
   // 電車（高架）
   // 2本の列車（上下線）。水瀬駅（ホーム中央 x=100）で10秒停車
-  for (const t of trains(T)) if (Math.abs(t.x - cam.p[0]) < S.draw + 200) r.draw(meshes.train, M4.trs(t.x, 0, t.z, t.yaw, 0, 0));
+  // 修正95：駅の近く（駅から600m以内）では描画距離に関係なく上下線とも描く
+  const nearSta = Math.hypot(cam.p[0] - 100, cam.p[2] + 445) < 600;
+  if (!LD) for (const t of trains(T)) if (nearSta || Math.abs(t.x - cam.p[0]) < S.draw + 200) r.draw(meshes.train, M4.trs(t.x, 0, t.z, t.yaw, 0, 0));
   // NPC車両
   const lightsNpc = env.night > 0.35 || rainK > 0.5 ? 1 : 0;
   const mtx = new Float32Array(16);
@@ -736,6 +806,7 @@ function drawWorld(env, planes, pM, lightsOn) {
   }
   r.draw(car.interior, pM);
   if (camMode !== 1 || state !== 'drive') r.draw(car.driver, pM); // 運転席視点では自分の体は描かない
+  if (LD && car.pass) r.draw(car.pass, pM); // 同乗者（設定した服装・座席。子どもはジュニアシート）
   const sp = def.steerPos;
   { const sm = M4.mul(pM, M4.trs(sp[0], sp[1], sp[2], 0, 0.42, -pl.steer * 4)); r.draw(car.steer, sm); r.draw(car.hands, sm); } // 手はハンドルと一緒に回る
   const th = 0.75 * Math.PI + Math.min(140, pl.kmh) / 140 * 1.5 * Math.PI;
@@ -751,6 +822,7 @@ function drawWorld(env, planes, pM, lightsOn) {
   gl.depthMask(true);
   if (env.night > 0.05) { r.blend('add'); r.alpha(env.night * 0.5); for (const c of vis) r.draw(c.m.glow); }
   r.alpha(1); r.blend(null);
+  if (LD) LD.extraDraw(r, cam, T, M4, meshes);
 }
 
 function renderSelect(dt, aspect) {
@@ -776,7 +848,7 @@ function hud(env, lightsOn, blink) {
   $('gear').textContent = player.gear;
   $('spd').classList.toggle('eco', !!player.ecoNow && player.gear === 'D'); $('spd').classList.toggle('rev', player.gear === 'R');
   $('iEco').classList.toggle('on', !!player.ecoNow && player.gear === 'D'); $('iIS').classList.toggle('on', !player.engineOn);
-  $('iKeep').classList.toggle('on', player.cruiseV != null); if (player.cruiseV != null) $('iKeep').textContent = `キープ ${Math.round(player.cruiseV * 3.6)}`;
+  $('iKeep').classList.toggle('on', player.cruiseV != null); if (player.cruiseV != null) $('iKeep').textContent = `キープ中 ${Math.round(player.cruiseV * 3.6)}km/h`;
   $('iLim').classList.toggle('on', !!S.lim); $('iLim').textContent = S.lim ? (player.limitV ? `LIM ${Math.round(player.limitV * 3.6)}` : 'LIM ―') : 'LIM';
   $('iAc').classList.toggle('on', !!S.ac); $('bA').classList.toggle('keep', player.cruiseV != null);
   $('iWL').classList.toggle('on', wink < 0 && blink); $('iWR').classList.toggle('on', wink > 0 && blink);
@@ -793,4 +865,82 @@ function hud(env, lightsOn, blink) {
   } else $('dbg').textContent = '';
 }
 
+// ================= v0.7.0 長距離ドライブモード =================
+const zcMtn = () => !!LD && (LD.season === 'autumn' || LD.season === 'winter');
+let ldPv = null;
+function driverText() { return `${AGES[driver.age]}・${SEXES[driver.sex]}・${OUTFITS[driver.outfit]}`; }
+function openLDSet(preset) {
+  state = 'ldset'; show('ldset'); setHud(false);
+  if (!ldSetup) ldSetup = new LDSetup({ $, driverText, driver: () => ({ ...driver }), carText: () => `ミライース（${MIRA_COLORS[color].name}）`,
+    onChange: cfg => buildLDPreview(cfg), onStart: cfg => startLD(cfg, null), onBack: () => { state = 'title'; show('title'); } });
+  ldSetup.open(preset); buildLDPreview(ldSetup.cfgOut());
+}
+// 設定画面の3Dプレビュー：車のまわりに立つ一行（季節の服装）と、車内の座席
+function buildLDPreview(cfg) {
+  if (ldPv) { for (const m of ldPv.stand) R.free(m); if (ldPv.pass) R.free(ldPv.pass); }
+  const all = [driverChar(cfg.driver, cfg.season), ...cfg.passengers.map(p => p.ch)];
+  ldPv = { stand: all.map(ch => { const g = new GB(); buildChar(g, ch, cfg.season, 'stand', {}); return R.mesh(g.build()); }), pass: null, season: cfg.season };
+  const g = new GB(); buildPassengersInCar(g, cfg.passengers, cfg.season); if (g.count) ldPv.pass = R.mesh(g.build());
+}
+function renderLDSet(dt, aspect) {
+  selYaw += dt * 0.35;
+  const pM = M4.trs(0, 0, 0, selYaw, 0, 0), eye = [5.2, 2.0, 5.0], port = aspect < 1;
+  const view = M4.lookAt(eye, [0.6, 0.5, 0], [0, 1, 0]), proj = M4.persp(port ? 1.05 : 0.72, aspect, 0.1, 200);
+  if (port) proj[9] = -0.38; else proj[8] = 0.36; // 設定パネルに隠れない位置に寄せる
+  const vp = M4.mul(proj, view), sea = ldPv ? ldPv.season : 'spring';
+  const fog = { spring: [0.2, 0.16, 0.18], summer: [0.1, 0.16, 0.22], autumn: [0.2, 0.13, 0.08], winter: [0.17, 0.19, 0.24] }[sea];
+  R.frame({ vp, fog, sun: norm([0.4, 0.8, 0.5]), sunC: [1, 0.97, 0.92], amb: [0.45, 0.46, 0.52], cam: eye, fogN: 30, fogF: 120, night: 0, wet: 0, hOn: 0, hP: [0, 0, 0], hD: [0, 0, 1] });
+  R.draw(meshes.studio);
+  const def = car.def, tint = MIRA_COLORS[color].rgb;
+  R.draw(car.body, pM, tint, [0.6, 0, 0, 0]);
+  for (const [wx, wz] of def.wheelPos) R.draw(wx < 0 ? car.wheelR : car.wheel, M4.mul(pM, M4.trs(wx, def.p.r, wz, 0, 0, 0)));
+  R.draw(car.interior, pM);
+  if (ldPv && ldPv.pass) R.draw(ldPv.pass, pM);
+  if (ldPv) ldPv.stand.forEach((m, i) => R.draw(m, M4.trs(1.6 + i * 0.75, 0, 1.4 + i * 0.35, 0.75)));
+  R.blend('alpha'); R.alpha(0.3); R.draw(car.glass, pM); R.alpha(1); R.blend(null);
+}
+async function startLD(cfg, sv) {
+  state = 'load'; show('load'); setHud(false); if (cut) { cut.finish(); cut = null; }
+  $('lmsg').textContent = `${SEASON_NAMES[cfg.season]}の長距離ドライブ（400km）を準備中…`; $('lbar').style.width = '10%'; await frame(); await frame();
+  // 市街地の読み込み済みチャンク・遠景を解放してメモリを空ける（市街地のセーブはそのまま）
+  for (const c of city.chunks) { if (c.m) city.freeChunk(c, R); c.pend = null; if (c.far) { R.free(c.far); c.far = null; } if (c.farT) { R.free(c.farT); c.farT = null; } }
+  for (const k of ['global', 'gdecal', 'mtn']) if (meshes[k]) R.free(meshes[k]);
+  const ctx = { R, $, snd, toast, getMin: () => gameMin, setMin: m => { gameMin = m; }, get player() { return player; }, onMovie: startMovie, onClear: showClear };
+  LD = new LongDrive(ctx, cfg, sv);
+  city = LD.city; traffic = LD.traffic; peds = LD.peds; traffic.peds = peds; nav = LD.nav;
+  $('lbar').style.width = '35%'; $('lmsg').textContent = '道路と景色を組み立て中…'; await frame();
+  for (const d of city.dyn) R.setLayer(d.lay, renderLayer(d.draw)); R.mips();
+  meshes.global = R.mesh(city.global.build()); meshes.gdecal = R.mesh(city.globalDecal.build()); meshes.mtn = R.mesh(city.mountains.build());
+  for (const [ch, gb] of LD.world.farT) if (gb.count) ch.farT = R.mesh(gb.build());
+  MM = LD.mm.canvas; MMX0 = LD.mm.x0; MMZ0 = LD.mm.z0; MMS = LD.mm.s; mmLabels = LD.mm.labels;
+  weather = LD.D.weather || 'clear'; gameMin = sv && typeof sv.min === 'number' ? sv.min : START_MIN;
+  player.city = city;
+  const pose = sv && sv.pos && sv.st.phase === 'drive' ? sv.pos : sv && sv.st.maxS ? LD.poseAtS(Math.max(20, sv.st.maxS)) : LD.startPose();
+  player.reset(pose.x, pose.z, pose.yaw, (pose.y || 0) + 1); player.cruiseV = null; lastPos = null; gSpd = 0; cam.mode = -1;
+  { const g = new GB(); buildPassengersInCar(g, cfg.passengers, cfg.season); if (car.pass) R.free(car.pass); car.pass = g.count ? R.mesh(g.build()) : null; }
+  document.body.classList.add('ld'); $('pWarp').closest('.row').hidden = true; $('pRespawn').textContent = '道路に戻る（動けないとき）';
+  const near = city.chunks.map(c => [c, Math.hypot(c.x - player.x, c.z - player.z)]).sort((a, b) => a[1] - b[1]);
+  let k = 0; for (const [c, d] of near) { if (d < S.draw + 300) { city.buildChunk(c, R); if (++k % 3 === 0) { $('lbar').style.width = (40 + Math.min(55, k * 3)) + '%'; await frame(); } } }
+  state = 'drive'; show(null); setHud(true); markToggles();
+  if (sv && sv.st.phase === 'rest' && sv.st.restFac) { const f = LD.world.fac.find(q => q.id === sv.st.restFac); if (f) LD.finishRest(f); } // 休憩ムービー中に中断していた場合は休憩を済ませて出口から
+  else if (sv && sv.st.phase === 'ending') LD.startEnding();
+  else if (!sv) { toast('09:00　水瀬東ICを出発しました', 3600); LD.saveNow(); }
+  else toast(`${hhmm(gameMin)}　長距離ドライブを再開しました`, 2400);
+}
+function startMovie(kind, info, done) {
+  for (const k in keys) keys[k] = false; for (const k in touch) touch[k] = false;
+  player.cruiseV = null; player.vx = 0; player.vy = 0; player.input = { thr: 0, brk: 1, steer: 0 };
+  state = 'movie'; setHud(false); show(null);
+  cut = new Cutscene({ R, M4, meshes, $ }, kind, info, () => { cut = null; done(); if (state === 'movie') { state = 'drive'; setHud(true); cam.mode = -1; lastPos = null; } });
+}
+function showClear(rec) { state = 'ldclear'; setHud(false); renderClear($, rec, getClears()); show('ldclear'); }
+
+function apInput(ap) { // 開発用：車線の中心をたどり、指定速度を保つ。休憩施設に寄るときは減速車線へ
+  const w = LD.world, p = w.project(player.x, player.z), f = w.fac.find(q => !LD.st.restedIds.includes(q.id) && ap.rest && ap.rest.includes(q.id) && p.s > q.s - 420 && p.s < q.s + 60);
+  let u = ap.u ?? 6.1; if (f) u = p.s > f.s - 260 ? 12.2 : 6.1;
+  const la = Math.max(10, gSpd * 0.9), q = w.pos(p.s + la, u), des = Math.atan2(q[0] - player.x, q[2] - player.z);
+  let e = des - player.yaw; while (e > Math.PI) e -= 2 * Math.PI; while (e < -Math.PI) e += 2 * Math.PI;
+  const v = f && p.s > f.s - 200 ? Math.min(ap.v, 40) : ap.v, kmh = gSpd * 3.6;
+  return { thr: kmh < v - 2 ? 1 : kmh < v ? 0.4 : 0, brk: kmh > v + 6 ? 0.6 : 0, steer: clamp(e * (ap.k ?? 3), -1, 1) };
+}
 boot();

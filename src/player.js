@@ -1,10 +1,10 @@
 // プレイヤー車両（ミライース）の物理：自転車モデル＋タイヤ横力（摩擦円）＋CVT
 // v0.3：後退旋回の修正、クリープ／坂道、壁でのスライド、路面種別、スタック自動復帰
-import { clamp } from './math.js?v=0.6.2';
-import { MIRA } from './carmodels.js?v=0.6.2';
+import { clamp } from './math.js?v=0.7.0';
+import { MIRA } from './carmodels.js?v=0.7.0';
 
 // 路面種別：0=草地・畑 1=舗装 2=歩道 3=砂利・敷地
-// 路面：草地・砂利は少し滑りやすいだけで、速度の上限（抵抗による頭打ち）は設けない
+// 路面：草地・砂利は少し滑りやすく、アクセルは約50km/hで効かなくなる（ブレーキはかけない）。住宅街は zoneCap（約70km/h）。制限速度リミッターは前進のみ
 const SURF = { 0: { mu: 0.75, rr: 0.02, drag: 0 }, 1: { mu: 1, rr: 0.012, drag: 0 }, 2: { mu: 0.95, rr: 0.015, drag: 0 }, 3: { mu: 0.88, rr: 0.016, drag: 0 } };
 
 export class Player {
@@ -19,7 +19,7 @@ export class Player {
     this.assist = true;
   }
   reset(x, z, yaw, cy = 0.5) {
-    Object.assign(this, { x, z, y: this.city ? this.city.groundY(x, z, cy) : 0, yaw, vx: 0, vy: 0, w: 0, steer: 0, rpm: 800, gear: 'D', pitch: 0, roll: 0, pv: 0, rv: 0, wheelRot: 0, slip: 0, hit: 0, accel: 0, braking: false, stopT: 0, holdT: 0, stuckT: 0, stuckP: [x, z], surf: 1, aeb: 0, gearReq: false, gearResult: null, wallPivot: 0, needRescue: false, engineOn: true, isArmed: false, isT: 0, restartT: 0, cruiseV: null, bump: 0, parked: true }); // 開始・ワープ直後は最初の操作まで停止を保持（勝手にクリープで動き出さない）
+    Object.assign(this, { scrapeT: 0, cT: null, x, z, y: this.city ? this.city.groundY(x, z, cy) : 0, yaw, vx: 0, vy: 0, w: 0, steer: 0, rpm: 800, gear: 'D', pitch: 0, roll: 0, pv: 0, rv: 0, wheelRot: 0, slip: 0, hit: 0, accel: 0, braking: false, stopT: 0, holdT: 0, stuckT: 0, stuckP: [x, z], surf: 1, aeb: 0, gearReq: false, gearResult: null, wallPivot: 0, needRescue: false, engineOn: true, isArmed: false, isT: 0, restartT: 0, cruiseV: null, bump: 0, parked: true }); // 開始・ワープ直後は最初の操作まで停止を保持（勝手にクリープで動き出さない）
     this.onReset && this.onReset(); // 表示（ギア表示・Rボタン）を実状態に合わせる
   }
   // クリープ用：進む向き（D=前、R=後ろ）のバンパーから1.5m以内に車・壁・柱があるか
@@ -36,6 +36,8 @@ export class Player {
   get kmh() { return Math.abs(this.vx) * 3.6; }
   step(dt, env, npcs) {
     this.T0 = (this.T0 || 0) + dt;
+    // 修正96：ガードレールをこすった直後の0.5秒は、車の向きを壁に沿う向きへ戻し続ける（向きがずれたままだとタイヤが横滑りして急に失速する）
+    if (this.scrapeT > 0) { this.scrapeT -= dt; let d = this.scrapeYaw - this.yaw; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; this.yaw += Math.max(-3 * dt, Math.min(3 * dt, d)); }
     const inp = this.input, g = 9.81;
     // 路面（雨は濡れ具合で連続的にグリップ低下）
     const surf = this.city.surfaceAt ? this.city.surfaceAt(this.x, this.z, this.y) : 1;
@@ -170,7 +172,7 @@ export class Player {
   collide(ox, oz, npcs, dt = 0.008) {
     const city = this.city;
     // 市の外周と川：見えない壁として扱い、壁と同じく法線方向だけ止めて滑らせる（位置を戻して止める方式だと抜け出せなくなる）
-    { const Lb = 2040; let bn = null;
+    if (!city.ld) { const Lb = 2040; let bn = null; // 長距離ドライブのコース（city.ld）には市の外周・水瀬川の見えない壁はない
       for (const p of this.corners()) {
         let nx = 0, nz = 0, d = 0;
         if (p[0] > Lb) { nx = -1; d = p[0] - Lb; } else if (p[0] < -Lb) { nx = 1; d = -Lb - p[0]; }
@@ -261,8 +263,10 @@ export class Player {
         // 接線方向の摩擦（正面衝突ほど強く減速）
         // 当たり続けている間（0.3秒以内の再接触）は、タイヤが向きを戻すぶんの法線成分で何度も減速しないようにする
         const sus = this.cT != null && this.T0 - this.cT < 0.3 && imp < 2.5; this.cT = this.T0 || 0;
-        const tk = sus ? 1 - Math.min(0.02, imp / Math.max(sp0, 0.1) * 0.05) : Math.max(0, 1 - imp / Math.max(sp0, 0.1) * 0.6 * massK);
-        const fk = tk * 0.5 + 0.5 * (1 - dt * 0.35); wx *= fk; wz *= fk; // こすり続けるときの減速は弱く（ガードレールで止まらず滑る）
+        // 修正96：こすり続けている間の減速は時間あたりで決める（以前はフレームごとに約1%ずつ減り、120fpsでは1秒で約75%も落ちていた）。
+        // 浅い角度（15度前後）でガードレールに沿って滑るときの減速は約1.2〜2m/s²
+        const fk = sus ? 1 - dt * (0.1 + 0.25 * Math.min(1, imp / 3)) : (Math.max(0, 1 - imp / Math.max(sp0, 0.1) * (imp < 3 ? 0.3 : 0.6) * massK)) * 0.5 + 0.5 * (1 - dt * 0.35);
+        wx *= fk; wz *= fk;
         if (imp > 1.2) this.hit = Math.max(this.hit, Math.min(1, imp / 8));
       }
     } else { wx *= -0.2; wz *= -0.2; }
@@ -273,7 +277,7 @@ export class Player {
     // 浅い角度で壁に当たったまま進むときは、車の向きを壁に沿わせて滑らせる（こすったまま止まってしまうのを防ぐ）
     if ((nx || nz) && Math.abs(this.vx) > 0.3) {
       const hx = Math.sin(this.yaw) * Math.sign(this.vx), hz = Math.cos(this.yaw) * Math.sign(this.vx), into = -(hx * nx + hz * nz);
-      if (into > 0.02 && into < 0.8) { let tx = -nz, tz = nx; if (tx * hx + tz * hz < 0) { tx = -tx; tz = -tz; } const want = Math.atan2(tx * Math.sign(this.vx), tz * Math.sign(this.vx)); let d = want - this.yaw; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; this.yaw += clamp(d, -2.6 * dt, 2.6 * dt); }
+      if (into > 0.02 && into < 0.8) { let tx = -nz, tz = nx; if (tx * hx + tz * hz < 0) { tx = -tx; tz = -tz; } const want = Math.atan2(tx * Math.sign(this.vx), tz * Math.sign(this.vx)); let d = want - this.yaw; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; this.yaw += clamp(d, -6 * dt, 6 * dt); this.scrapeYaw = want; this.scrapeT = 0.5; }
     }
     if ((nx || nz) && inp.thr > 0.3 && Math.abs(this.steer) > 0.05) { const sg = Math.sign(this.steer) * (this.gear === 'R' ? -1 : 1); if (Math.abs(this.w) < 0.6) this.w = sg * 0.6; this.wallPivot = 0.15; }
     void depth;

@@ -36,3 +36,26 @@ export async function clearSave() {
   try { localStorage.removeItem(DB); } catch (e) { /* none */ }
   try { await tx('readwrite', st => st.delete(KEY)); } catch (e) { /* none */ }
 }
+// ---- 長距離ドライブモード専用のセーブ（市街地散策モードの slot1 とは別のキー。互いに影響しない） ----
+const LD_KEY = 'ld1', LD_LS = 'minase-drive-ld', CLEAR_LS = 'minase-drive-ld-clears';
+let ldMem = null;
+export async function saveLD(data) {
+  ldMem = data; let ls = false;
+  try { localStorage.setItem(LD_LS, JSON.stringify(data)); ls = true; } catch (e) { /* none */ }
+  try { await tx('readwrite', st => st.put(data, LD_KEY)); return 'IndexedDB'; } catch (e) { return ls ? 'localStorage' : 'memory'; }
+}
+export async function loadLD() {
+  let a = null, b = null;
+  try { a = await tx('readonly', st => st.get(LD_KEY)); } catch (e) { /* none */ }
+  try { const s = localStorage.getItem(LD_LS); if (s) b = JSON.parse(s); } catch (e) { /* none */ }
+  const v = a && b ? ((b.at || 0) > (a.at || 0) ? b : a) : a || b || ldMem;
+  return v && typeof v === 'object' ? v : null;
+}
+export async function clearLD() {
+  ldMem = null;
+  try { localStorage.removeItem(LD_LS); } catch (e) { /* none */ }
+  try { await tx('readwrite', st => st.delete(LD_KEY)); } catch (e) { /* none */ }
+}
+// クリア記録（最新20件）
+export function addClear(rec) { try { const a = JSON.parse(localStorage.getItem(CLEAR_LS) || '[]'); a.unshift(rec); localStorage.setItem(CLEAR_LS, JSON.stringify(a.slice(0, 20))); } catch (e) { /* none */ } }
+export function getClears() { try { return JSON.parse(localStorage.getItem(CLEAR_LS) || '[]'); } catch (e) { return []; } }

@@ -1,6 +1,6 @@
 // 軽量WebGL2レンダラー（PS2風：頂点カラー＋ランバート＋フォグ＋単一スポットライト）
-import { STRIDE } from './geo.js?v=0.6.2';
-import { TS, LAYER_COUNT, buildLayers } from './textures.js?v=0.6.2';
+import { STRIDE } from './geo.js?v=0.7.0';
+import { TS, LAYER_COUNT, buildLayers } from './textures.js?v=0.7.0';
 
 const VS = `#version 300 es
 layout(location=0) in vec3 aP; layout(location=1) in vec3 aN; layout(location=2) in vec3 aC;
@@ -23,6 +23,7 @@ void main(){
   if(m==17 && t.a<.5) discard;
   if(m==22 && uWet<.3) discard;
   if(m==24){ o=vec4(vC*t.rgb,uAlpha); return; }
+  if(m==26){ o=vec4(0.,0.,0.,uAlpha*vC.r); return; } // 修正97-3：柔らかい接地影（頂点色の赤＝濃さ）
   if(m==25){ o=vec4(vC*t.rgb*clamp(uAmb*1.3+uSunC*.75,0.,1.2),t.a*uAlpha); return; }
   vec3 base=vC*t.rgb; if(m==1) base*=uTint;
   float dist=length(vW-uCam);
@@ -33,8 +34,9 @@ void main(){
   vec3 lit=base*(uAmb+uSunC*d+vec3(.16,.14,.11)*uNight*uUrban);
   if(uHOn>0.){
     vec3 L=vW-uHP; float ds=length(L); vec3 Ld=L/max(ds,.001);
-    float sp=smoothstep(.66,.88,dot(Ld,uHD))*clamp(1.-ds/100.,0.,1.)*(.55+.45*smoothstep(.85,.96,dot(Ld,uHD)));
-    lit+=base*sp*(max(dot(n,-Ld),0.)*.7+.3)*2.4*uHOn;
+    // 修正97-2：ヘッドライトの照射範囲を実車に近い幅（左右約35度）にし、高い所（屋根・樹冠・ハウスの上）は照らさない
+    float sp=smoothstep(.80,.93,dot(Ld,uHD))*clamp(1.-ds/90.,0.,1.)*(.5+.5*smoothstep(.9,.97,dot(Ld,uHD)))*clamp(1.-(vW.y-uHP.y-.8)/3.5,0.,1.);
+    lit+=base*sp*(max(dot(n,-Ld),0.)*.75+.25)*2.0*uHOn;
   }
   if(m==7||m==22){
     vec3 V=normalize(uCam-vW); vec3 R=reflect(-uSun,n);

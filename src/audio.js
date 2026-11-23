@@ -128,6 +128,20 @@ export class Sound {
     const seq = ['E4', 'C4', 'D4', 'G3', null, 'G3', 'D4', 'E4', 'C4'];
     seq.forEach((n, i) => { if (!n) return; const t0 = t + i * 0.9; for (const [m, a] of [[1, 0.05], [2.01, 0.015], [3.02, 0.008]]) { const o = ctx.createOscillator(), g = ctx.createGain(); o.type = 'sine'; o.frequency.value = N[n] * m; g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(a, t0 + 0.03); g.gain.exponentialRampToValueAtTime(0.0001, t0 + 2.6); o.connect(g); g.connect(this.master); o.start(t0); o.stop(t0 + 2.7); } });
   }
+  // 修正95：駅の接近案内（ピンポーン）と、列車の走行音（近いほど大きい低い走行音＋レールの継ぎ目の音）
+  stationBell() {
+    if (!this.ok) return;
+    const ctx = this.ctx, t = ctx.currentTime + 0.05;
+    for (const [f, t0] of [[880, 0], [698.5, 0.55]]) { const o = ctx.createOscillator(), g = ctx.createGain(); o.type = 'sine'; o.frequency.value = f; g.gain.setValueAtTime(0.0001, t + t0); g.gain.exponentialRampToValueAtTime(0.06, t + t0 + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t + t0 + 1.4); o.connect(g); g.connect(this.master); o.start(t + t0); o.stop(t + t0 + 1.5); }
+  }
+  train(k, v = 1) {
+    if (!this.ok) return;
+    const ctx = this.ctx;
+    if (!this.trn) { const len = ctx.sampleRate * 2, buf = ctx.createBuffer(1, len, ctx.sampleRate), d = buf.getChannelData(0); for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+      const src = ctx.createBufferSource(); src.buffer = buf; src.loop = true; const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 260; const g = ctx.createGain(); g.gain.value = 0; src.connect(lp); lp.connect(g); g.connect(this.master); src.start(); this.trn = { g, last: 0 }; }
+    this.trn.g.gain.setTargetAtTime(Math.min(0.12, k * 0.12 * v), ctx.currentTime, 0.3);
+    if (k > 0.15 && v > 0.2 && ctx.currentTime - this.trn.last > 0.9 / v) { this.trn.last = ctx.currentTime; for (const dt of [0, 0.12]) { const t = ctx.currentTime + dt, o = ctx.createOscillator(), g = ctx.createGain(); o.type = 'triangle'; o.frequency.setValueAtTime(95, t); o.frequency.exponentialRampToValueAtTime(45, t + 0.12); g.gain.setValueAtTime(Math.min(0.08, k * 0.08), t); g.gain.exponentialRampToValueAtTime(0.0005, t + 0.14); o.connect(g); g.connect(this.master); o.start(t); o.stop(t + 0.15); } } // ガタンゴトン
+  }
   // 操作音（Rギア切替など）
   beep(f = 1200, d = 0.08, n = 1) {
     if (!this.ok) return;
@@ -208,14 +222,17 @@ export class Music {
     if (ctx.rural) return TRACKS[4];
     return TRACKS[0];
   }
+  kick() { this.kickT = 1; } // 次の update で短いフェード（0.35秒）で切り替える
   update(ctxInfo, active) {
     if (!this.ctx) return null;
     const want = active ? this.pick(ctxInfo) : null;
     const t = this.ctx.currentTime;
     if (want !== this.cur) {
-      if (!this.fading) { this.fading = true; this.out.gain.setTargetAtTime(0, t, 0.4); this.fadeAt = t + 1.4; this.next = want; }
-      else this.next = want;
+      const q = this.kickT; this.kickT = 0;
+      if (!this.fading) { this.fading = true; this.out.gain.setTargetAtTime(0, t, q ? 0.1 : 0.4); this.fadeAt = t + (q ? 0.35 : 1.4); this.next = want; }
+      else { this.next = want; if (q) this.fadeAt = Math.min(this.fadeAt, t + 0.35); }
     }
+    else if (!this.fading) this.kickT = 0;
     if (this.fading && t > this.fadeAt) {
       this.fading = false; this.cur = this.next; this.step = 0; this.nextTime = t + 0.1;
       if (this.cur) this.mel = makeMelody(this.cur);

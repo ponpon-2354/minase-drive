@@ -1,13 +1,13 @@
 // 都市の拡張部分（フェーズ4）：山間部（みなせ峠・トンネル）、地形、バイパス高架、河川と橋、
 // 郊外住宅地・工業団地・郊外ロードサイド・田園・河川敷、鉄道
-import { roadExtras } from './props.js?v=0.6.2';
-import { farmV4, townExtras, shadowsAndFar, cherry, cemetery, farmCenter } from './extras.js?v=0.6.2';
-import { GB } from './geo.js?v=0.6.2';
-import { L } from './textures.js?v=0.6.2';
-import { rng, clamp } from './math.js?v=0.6.2';
-import { pickModel, pickColor, MODELS, pickCommercial, pickPassenger, isCommercial, pickFit } from './carmodels.js?v=0.6.2';
-import { districtsPost } from './districts.js?v=0.6.2';
-import { LINES, XL, BYP_X, bypY, mkSpec, polyInfo, WHITE, YEL, PAL_HOUSE, PAL_ROOF, PAL_WALL } from './city.js?v=0.6.2';
+import { roadExtras } from './props.js?v=0.7.0';
+import { farmV4, townExtras, shadowsAndFar, cherry, cemetery, farmCenter } from './extras.js?v=0.7.0';
+import { GB } from './geo.js?v=0.7.0';
+import { L } from './textures.js?v=0.7.0';
+import { rng, clamp } from './math.js?v=0.7.0';
+import { pickModel, pickColor, MODELS, pickCommercial, pickPassenger, isCommercial, pickFit } from './carmodels.js?v=0.7.0';
+import { districtsPost } from './districts.js?v=0.7.0';
+import { LINES, XL, BYP_X, bypY, mkSpec, polyInfo, WHITE, YEL, PAL_HOUSE, PAL_ROOF, PAL_WALL } from './city.js?v=0.7.0';
 
 const TX0 = -2600, TX1 = 2600, TZ0 = -2600, TZ1 = -1000, TS = 10; // 地形グリッド
 const smooth = t => { t = clamp(t, 0, 1); return t * t * (3 - 2 * t); };
@@ -133,7 +133,10 @@ function pre(city) {
     if (z > -985) return null;
     const n = nearest(x, z); if (!n || n.d > hw + 3.2) return null;
     const base = n.y + lift(n.s);
-    return n.d <= hw + 0.6 ? base : base - 0.25 * (n.d - hw - 0.6) / 2.6;
+    if (n.d <= hw + 0.6) return base;
+    // 修正94：峠の入口では外周道路（z≒-1000、路面y=0）の車線に峠道の路肩の下り勾配を効かせない
+    if (z > -1014) return null;
+    return base - 0.25 * (n.d - hw - 0.6) / 2.6;
   };
   // --- 地形グリッド（山道に沿って切り盛り） ---
   const NX = (TX1 - TX0) / TS + 1, NZ = (TZ1 - TZ0) / TS + 1;
@@ -316,12 +319,14 @@ function post(city) {
   // 電車（鉄道線）の車体
   const T = new GB();
   for (let k = 0; k < 4; k++) { // 4両編成（線路中心に原点）
-    T.box(k * 20.5, 9.0, -1.45, k * 20.5 + 20, 12.4, 1.45, { c: [0.92, 0.93, 0.93], mat: 3, side: { lay: L.TRAINWIN, tw: 5, th: 3.4 } });
+    T.box(k * 20.5, 9.0, -1.45, k * 20.5 + 20, 12.4, 1.45, { c: [1, 1, 1], side: { lay: L.TRAINWIN, tw: 5, th: 3.4 } });
     T.box(k * 20.5 + 1, 12.4, -1.2, k * 20.5 + 19, 12.6, 1.2, { c: [0.6, 0.6, 0.62] });
     for (const bx of [3, 17]) { T.box(k * 20.5 + bx - 1.3, 8.4, -1.1, k * 20.5 + bx + 1.3, 9.0, 1.1, { c: [0.2, 0.2, 0.22] }); }
     if (k === 1 || k === 2) { const px = k * 20.5 + 10; T.beam([px - 1, 12.6, 0], [px, 13.0, 0], 0.03, { c: [0.25, 0.25, 0.25] }); T.beam([px, 13.0, 0], [px + 1, 12.6, 0], 0.03, { c: [0.25, 0.25, 0.25] }); T.box(px - 0.1, 12.95, -0.8, px + 0.1, 13.02, 0.8, { c: [0.25, 0.25, 0.25] }); }
   }
   for (const [x, f] of [[-0.02, 1], [82.02, -1]]) for (const s of [-1, 1]) { T.box(x - 0.02, 9.6, s * 0.9 - 0.15, x + 0.02, 9.8, s * 0.9 + 0.15, { c: [1, 1, 0.9], mat: 2 }); void f; }
+  // 先頭・最後尾の顔：大きな前面ガラスと水瀬線グリーンの前面（修正95：電車らしく見えるように）
+  for (const x of [-0.03, 82.0]) { T.box(x, 10.6, -1.2, x + 0.03, 12.0, 1.2, { c: [0.11, 0.13, 0.17] }); T.box(x, 9.1, -1.4, x + 0.03, 10.0, 1.4, { c: [0.1, 0.55, 0.38] }); }
   city.trainGeo = T;
 }
 
@@ -520,6 +525,30 @@ function buildMountain(city) {
       city.padQuadY = (x, z) => triY(V[0], V[1], V[2], x, z) ?? triY(V[0], V[2], V[3], x, z); }
     city.add(a[0], a[1], g => g.d1.quadN([a[0] - nx, pd.y + 0.03, a[1] - nz], [a[0] + nx, pd.y + 0.03, a[1] + nz], [cP[0], cP[1] + 0.005, cP[2]], [cM[0], cM[1] + 0.005, cM[2]], [0, 1, 0], { c: [0.95, 0.95, 0.95], mat: 7, lay: L.ASPHALT }, [[a[0] / 8, a[1] / 8], [a[0] / 8 + 1, a[1] / 8], [cP[0] / 8 + 1, cP[2] / 8], [cM[0] / 8, cM[2] / 8]])); }
   city.mm.lots.push({ x0: pd.x0, x1: pd.x1, z0: pd.z0, z1: pd.z1 });
+  // 修正97-8：道の駅の駐車場の囲い（縁石＋植え込み＋低い柵）。車が出入りできるのは峠道への進入路（幅10m）だけ
+  { const [a, b] = pd.link, vx = b[0] - a[0], vz = b[1] - a[1];
+    // 進入路の中心線が平場の縁を横切る点（出入口の中心）
+    let tg = 1; for (const [t] of [[(pd.x0 - a[0]) / vx], [(pd.x1 - a[0]) / vx], [(pd.z0 - a[1]) / vz], [(pd.z1 - a[1]) / vz]]) { if (!(t > 0 && t < tg)) continue; const x = a[0] + vx * t, z = a[1] + vz * t; if (x >= pd.x0 - 0.01 && x <= pd.x1 + 0.01 && z >= pd.z0 - 0.01 && z <= pd.z1 + 0.01) tg = t; }
+    const gx = a[0] + vx * tg, gz = a[1] + vz * tg, GAP = 5.2;
+    const edges = [[[pd.x0, pd.z0], [pd.x1, pd.z0]], [[pd.x1, pd.z0], [pd.x1, pd.z1]], [[pd.x1, pd.z1], [pd.x0, pd.z1]], [[pd.x0, pd.z1], [pd.x0, pd.z0]]];
+    const segs = [];
+    for (const [p0, p1] of edges) { const ex = p1[0] - p0[0], ez = p1[1] - p0[1], L = Math.hypot(ex, ez), ux = ex / L, uz = ez / L, t = (gx - p0[0]) * ux + (gz - p0[1]) * uz, d = Math.abs((gx - p0[0]) * uz - (gz - p0[1]) * ux);
+      if (d < 0.5 && t > -GAP && t < L + GAP) { if (t - GAP > 0.5) segs.push([p0, [p0[0] + ux * (t - GAP), p0[1] + uz * (t - GAP)]]); if (L - t - GAP > 0.5) segs.push([[p0[0] + ux * (t + GAP), p0[1] + uz * (t + GAP)], p1]); }
+      else segs.push([p0, p1]); }
+    pd.fence = segs; pd.gate = [gx, gz];
+    city.add((pd.x0 + pd.x1) / 2, (pd.z0 + pd.z1) / 2, g => {
+      for (const [p0, p1] of segs) { const ex = p1[0] - p0[0], ez = p1[1] - p0[1], L = Math.hypot(ex, ez), ux = ex / L, uz = ez / L, nx = -uz * 0.5, nz = ux * 0.5;
+        // 縁石（コンクリート）と、その外側の植え込み、一定間隔の柵の支柱と横木
+        g.s.box(Math.min(p0[0], p1[0]) - Math.abs(nx) * 0.5, pd.y, Math.min(p0[1], p1[1]) - Math.abs(nz) * 0.5, Math.max(p0[0], p1[0]) + Math.abs(nx) * 0.5, pd.y + 0.18, Math.max(p0[1], p1[1]) + Math.abs(nz) * 0.5, { c: [0.78, 0.78, 0.75] });
+        g.s.box(Math.min(p0[0], p1[0]) - Math.abs(nx) * 2.2, pd.y + 0.18, Math.min(p0[1], p1[1]) - Math.abs(nz) * 2.2, Math.max(p0[0], p1[0]) + Math.abs(nx) * 2.2, pd.y + 0.85, Math.max(p0[1], p1[1]) + Math.abs(nz) * 2.2, { c: [0.3, 0.48, 0.25], lay: L.TREE, side: { lay: L.TREE, tw: 2, th: 1 } });
+        for (let t = 0; t <= L; t += 2.5) g.det.cyl(p0[0] + ux * t, pd.y, p0[1] + uz * t, 0.05, 1.0, 4, { c: [0.45, 0.33, 0.22] });
+        g.det.beam([p0[0], pd.y + 0.9, p0[1]], [p1[0], pd.y + 0.9, p1[1]], 0.04, { c: [0.5, 0.37, 0.25] });
+      }
+      // 出入口の案内（入口の両側の低い柱）
+      for (const sg of [-1, 1]) { const q = [gx + (vz / Math.hypot(vx, vz)) * sg * (GAP + 0.3), gz - (vx / Math.hypot(vx, vz)) * sg * (GAP + 0.3)]; g.s.box(q[0] - 0.3, pd.y, q[1] - 0.3, q[0] + 0.3, pd.y + 1.1, q[1] + 0.3, { c: [0.6, 0.45, 0.32] }); }
+    });
+    for (const [p0, p1] of segs) city.addWall(p0[0], p0[1], p1[0], p1[1], pd.y - 1.5, pd.y + 1.4);
+  }
   const Rp = rng(55);
   // 道の駅の中心から峠道へ出る通り道には駐車車両を置かない
   const pcx = (pd.x0 + pd.x1) / 2, pcz = (pd.z0 + pd.z1) / 2; let rx = pcx, rz = pcz; { let bd = 1e9; for (const q of full) { const d = Math.hypot(q[0] - pcx, q[1] - pcz); if (d < bd) { bd = d; rx = q[0]; rz = q[1]; } } }

@@ -1,7 +1,7 @@
 // v0.3 道路わき・街の小物（標識・カーブミラー・バス停・自販機・ポスト・自転車・看板類）と、道路の細部
-import { L } from './textures.js?v=0.6.2';
-import { rng } from './math.js?v=0.6.2';
-import { MODELS as MODELS_REF } from './carmodels.js?v=0.6.2';
+import { L } from './textures.js?v=0.7.0';
+import { rng } from './math.js?v=0.7.0';
+import { MODELS as MODELS_REF } from './carmodels.js?v=0.7.0';
 
 const BACK = { SP30: 'BACK_RND', SP40: 'BACK_RND', SP50: 'BACK_RND', SP60: 'BACK_RND', NOENTRY: 'BACK_RND', BUSSTOP: 'BACK_RND', STOP: 'BACK_TRI', CURVE: 'BACK_DIA' };
 const WHITE = [0.95, 0.95, 0.93];
@@ -181,7 +181,7 @@ export function installProps(City) {
 }
 
 // ================= 街全体の追加設備（街区生成のあとに呼ぶ） =================
-const DEST = [['水瀬駅', 0, -420], ['市役所', 250, -250], ['みなせ峠', 0, -1450], ['水瀬川', 0, 565], ['工業団地', -1750, 0], ['水瀬IC', 1000, 300], ['田園地帯', -1000, 1300], ['道の駅', -470, -1500], ['県庁方面', 2000, 0], ['西水瀬', -1500, 0]];
+const DEST = [['水瀬駅', 0, -420], ['市役所', 250, -250], ['みなせ峠', 0, -1450], ['水瀬川', 0, 565], ['工業団地', -1750, 0], ['水瀬IC', 1000, 300], ['田園地帯', -1000, 1300], ['道の駅', -470, -1500], ['県庁方面', 2000, 0], ['旧水瀬街道', -1250, -760]]; // 修正99-4：路面電車の電停名に由来する「西水瀬」は撤去（西側の行き先は工業団地と旧水瀬街道）
 export function txt(ctx, s, x, y, size, col, align = 'center', w = 999) {
   ctx.font = `700 ${size}px 'Hiragino Kaku Gothic ProN','Hiragino Sans','Noto Sans JP','Yu Gothic',sans-serif`;
   const m = ctx.measureText(s).width; ctx.save(); ctx.translate(x, y); if (m > w) ctx.scale(w / m, 1);

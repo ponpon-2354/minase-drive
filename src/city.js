@@ -1,12 +1,12 @@
 // 架空都市「水瀬市」：道路ネットワーク・信号・街区・建物・駐車場・チャンク管理
 // v0.2：約4km四方（x,z = -2000〜2000）。中心市街地（1km四方）＋郊外・工業団地・ロードサイド・河川・田園・山間部
-import { GB, hex } from './geo.js?v=0.6.2';
-import { L, plateUV, PLATES } from './textures.js?v=0.6.2';
-import { rng, clamp } from './math.js?v=0.6.2';
-import { buildHull, pickModel, pickColor, MODELS, plateClass, pickPassenger, pickCommercial, isCommercial, pickFit } from './carmodels.js?v=0.6.2';
-import { CURVES, curvePts, inNewDistrict } from './districts.js?v=0.6.2';
-import { buildWorld } from './world.js?v=0.6.2';
-import { installProps } from './props.js?v=0.6.2';
+import { GB, hex } from './geo.js?v=0.7.0';
+import { L, plateUV, PLATES } from './textures.js?v=0.7.0';
+import { rng, clamp } from './math.js?v=0.7.0';
+import { buildHull, pickModel, pickColor, MODELS, plateClass, pickPassenger, pickCommercial, isCommercial, pickFit } from './carmodels.js?v=0.7.0';
+import { CURVES, curvePts, inNewDistrict } from './districts.js?v=0.7.0';
+import { buildWorld } from './world.js?v=0.7.0';
+import { installProps } from './props.js?v=0.7.0';
 
 export const LINES = [-500, -375, -250, -125, 0, 125, 250, 375, 500];
 export const XL = [-2000, -1500, -1000, -500, 0, 500, 1000, 1500, 2000];
@@ -929,7 +929,7 @@ export class City {
     for (const s of [1, -1]) {
       const n = [t[0] * s, 0, t[1] * s];
       const a = [x - f.inv[0] * w / 2 * s, z - f.inv[1] * w / 2 * s], b = [x + f.inv[0] * w / 2 * s, z + f.inv[1] * w / 2 * s];
-      gb.panel(a[0], a[1], b[0], b[1], h, h + hh, 0.06, n, { c: [1, 1, 1], mat: 16, lay });
+      gb.panel(a[0], a[1], b[0], b[1], h, h + hh, 0.13, n, { c: [1, 1, 1], mat: 16, lay }); // 修正97-1：枠の箱（厚さ0.2m）より外に出す（0.06では箱の中に埋もれて無地の板に見えていた）
     }
     gb.box(x - 0.1 - Math.abs(f.inv[0]) * w / 2, h - 0.05, z - 0.1 - Math.abs(f.inv[1]) * w / 2, x + 0.1 + Math.abs(f.inv[0]) * w / 2, h + hh + 0.05, z + 0.1 + Math.abs(f.inv[1]) * w / 2, { c: [0.3, 0.3, 0.3], noTop: false });
     this.addBox(x - 0.2, z - 0.2, x + 0.2, z + 0.2, 'p');
@@ -1215,3 +1215,34 @@ export class City {
   // ---------- 郊外・河川・山・鉄道 ----------
 }
 installProps(City);
+
+// ===== 開発用の監査（修正94・98）：README と納品報告の数値はこの出力から取る =====
+// 接地監査：全道路（直線・曲線・峠）と生活道路・農道を step m 間隔、車線中心と両端でサンプリングし、
+// 物理の接地高さ groundY と、実際に描画される路面ポリゴンの高さとの差を集計する。
+// 使い方（?dev=1）：コンソールで G.auditGround()（既定5m間隔。数十秒かかる）
+export function auditGround(city, step = 5, opt = {}) {
+  const LN = {}; for (const k in L) LN[L[k]] = k;
+  const cache = new Map();
+  const tri = (G, out, tag) => { const a = G.a; for (let i = 0; i < a.length; i += 39) { if (a[i + 4] < 0.5) continue; const P = [0, 1, 2].map(k => [a[i + k * 13], a[i + k * 13 + 1], a[i + k * 13 + 2]]); const x0 = Math.min(P[0][0], P[1][0], P[2][0]), x1 = Math.max(P[0][0], P[1][0], P[2][0]), z0 = Math.min(P[0][2], P[1][2], P[2][2]), z1 = Math.max(P[0][2], P[1][2], P[2][2]); if (tag === 'global' && (x1 - x0 > 400 || z1 - z0 > 400)) continue; const t = { P, lay: a[i + 12] }; for (let gx = Math.floor(x0 / 4); gx <= Math.floor(x1 / 4); gx++) for (let gz = Math.floor(z0 / 4); gz <= Math.floor(z1 / 4); gz++) { const k = gx + ',' + gz; let l = out.get(k); if (!l) out.set(k, l = []); l.push(t); } } };
+  const grid = ch => { let g = cache.get(ch); if (g) return g; const gb = { s: new GB(), det: new GB(), d1: new GB(), d2: new GB(), glow: new GB(), lines: new GB(), sh: new GB(), pud: new GB(), nc0: new GB(), nc1: new GB(), nc2: new GB() }; for (const f of ch.cmds) f(gb); g = new Map(); for (const ln of ['s', 'd1', 'd2']) tri(gb[ln], g, ln); cache.set(ch, g); return g; };
+  const glob = new Map(); for (const G of [city.global, city.globalDecal]) if (G) tri(G, glob, 'global');
+  const hAt = (t, x, z) => { const [a, b, d] = t.P, v0x = b[0] - a[0], v0z = b[2] - a[2], v1x = d[0] - a[0], v1z = d[2] - a[2], v2x = x - a[0], v2z = z - a[2], den = v0x * v1z - v1x * v0z; if (Math.abs(den) < 1e-9) return null; const u = (v2x * v1z - v1x * v2z) / den, v = (v0x * v2z - v2x * v0z) / den; if (u < -1e-4 || v < -1e-4 || u + v > 1 + 1e-4) return null; return a[1] + u * (b[1] - a[1]) + v * (d[1] - a[1]); };
+  const rendered = (x, z, lo, hi) => { const k = Math.floor(x / 4) + ',' + Math.floor(z / 4), cand = [...(glob.get(k) || [])], seen = new Set(); for (const dx of [-250, 0, 250]) for (const dz of [-250, 0, 250]) { const ch = city.chunkAt(x + dx, z + dz); if (!ch || seen.has(ch)) continue; seen.add(ch); cand.push(...(grid(ch).get(k) || [])); } let best = null, bl = null; for (const t of cand) { const y = hAt(t, x, z); if (y == null || y < lo || y > hi) continue; if (best == null || y > best) { best = y; bl = t; } } return best == null ? null : { y: best, lay: LN[bl.lay] || String(bl.lay) }; };
+  const res = {}, worst = [];
+  const add = (kind, x, z, gy) => { const r = res[kind] || (res[kind] = { n: 0, max: 0, over: 0, noSurf: 0, grassTop: 0, worst: null }); r.n++; const q = rendered(x, z, gy - 3, gy + 1.2); if (!q) { r.noSurf++; return; } if (/GRASS|ROCK|PADDY/.test(q.lay) || (/FIELD/.test(q.lay) && kind !== 'lane:farm')) r.grassTop++; const d = Math.abs(gy - q.y); if (d > 0.05) { r.over++; if (worst.length < 30) worst.push([kind, +x.toFixed(2), +z.toFixed(2), +(gy - q.y).toFixed(3)]); } if (d > r.max) { r.max = d; r.worst = [+x.toFixed(2), +z.toFixed(2), +(gy - q.y).toFixed(3), q.lay]; } };
+  for (const e of city.edges) {
+    const kind = e.sp.kind + (e.straight ? '' : '(曲線)');
+    for (let s = 1; s < e.len - 1; s += step) for (let k = 0; k < e.lanes; k++) for (const lat of [0, -(e.lw / 2 - 0.35), e.lw / 2 - 0.35]) { const p = city.lanePos(e, k, s, lat); add(kind, p[0], p[1], city.groundY(p[0], p[1], city.yAt(e, s) + 0.5)); }
+  }
+  for (const l of city.mm.lanes) { if (l.kind !== 'lane' && l.kind !== 'farm') continue; const kind = 'lane:' + l.kind; for (let t = l.a + 1; t < l.b - 1; t += step) for (const o of [0, -(l.w - 0.4), l.w - 0.4]) { const x = l.axis === 'ns' ? l.c + o : t, z = l.axis === 'ns' ? t : l.c + o; add(kind, x, z, city.groundY(x, z, 0.5)); } }
+  let n = 0, max = 0; for (const r of Object.values(res)) { n += r.n; max = Math.max(max, r.max); }
+  return { step, points: n, maxDiff: +max.toFixed(3), byKind: res, over5cm: worst };
+}
+// 当たり判定監査：全道路・生活道路・農道の車線上（車の左右の端の位置）に建物の当たり判定が残っていないか
+export function auditLaneBlock(city, step = 2) {
+  let n = 0; const hit = [];
+  const chk = (kind, x, z, y) => { n++; for (const b of city.query(x, z, 2)) if (b.kind === 'b' && b.y0 < y + 1 && b.y1 > y + 0.4 && x > b.x0 && x < b.x1 && z > b.z0 && z < b.z1) { if (hit.length < 30) hit.push([kind, +x.toFixed(1), +z.toFixed(1)]); return; } };
+  for (const e of city.edges) for (let s = 3; s < e.len - 3; s += step) for (const o of [-0.8, 0.8]) for (let k = 0; k < e.lanes; k++) { const p = city.lanePos(e, k, s, o); chk(e.sp.kind, p[0], p[1], city.yAt(e, s)); }
+  for (const l of city.mm.lanes) { if ((l.kind !== 'lane' && l.kind !== 'farm') || l.poly) continue; for (let t = l.a + 3; t < l.b - 3; t += step) for (const o of [-1.2, 1.2]) chk('lane:' + l.kind, l.axis === 'ns' ? l.c + o : t, l.axis === 'ns' ? t : l.c + o, 0); }
+  return { points: n, blocked: hit.length, examples: hit };
+}

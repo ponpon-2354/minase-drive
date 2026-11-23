@@ -1,9 +1,9 @@
 // v0.5 新しい地区：学園地区（大学キャンパス・学生街）とニュータウン（曲線道路・袋小路・小学校・公園）、
 // 既存の郊外に旧街道（斜めに抜ける細い道）。道路は格子ではなく曲線のポリラインで、道路網（信号・NPC・ナビ）に接続する
-import { L } from './textures.js?v=0.6.2';
-import { rng, clamp } from './math.js?v=0.6.2';
-import { MODELS, pickModel, pickColor, pickPassenger, pickFit } from './carmodels.js?v=0.6.2';
-import { installDyn, txt } from './props.js?v=0.6.2';
+import { L } from './textures.js?v=0.7.0';
+import { rng, clamp } from './math.js?v=0.7.0';
+import { MODELS, pickModel, pickColor, pickPassenger, pickFit } from './carmodels.js?v=0.7.0';
+import { installDyn, txt } from './props.js?v=0.7.0';
 
 // 区間の定義（両端は交差点ノード。途中点はなめらかな曲線にする）。axis は信号の位相に使う向き
 export const CURVES = [
@@ -291,7 +291,7 @@ function studentShop(city, x, z, yaw, k, R) {
       for (let i = 0; i < 4; i++) g.d2.flat(-8 + i * 4.2, 3, -7.9 + i * 4.2, 9, 0.03, { c: [0.95, 0.95, 0.93] });
       g.s.box(-9, 0, 12, 9, 4.2, 25, { c: [0.95, 0.95, 0.94], mat: 3, side: { lay: L.SHOP, tw: 6, th: 4.2 }, top: { lay: L.ROOF, tw: 6 } });
       g.s.box(-9.1, 3.1, 11.9, 9.1, 4.2, 12.1, { c: [0.2, 0.6, 0.35], mat: 18 }); // 看板帯（夜も明るい）
-      g.s.panel(-5, 12.0 - 0.05, 5, 12.0 - 0.05, 3.15, 4.15, 0, [0, 0, -1], { c: [1, 1, 1], mat: 16, lay }, [[1, 1], [0, 1], [0, 0], [1, 0]]);
+      g.s.panel(-5, 11.86, 5, 11.86, 3.15, 4.15, 0, [0, 0, -1], { c: [1, 1, 1], mat: 16, lay }, [[1, 1], [0, 1], [0, 0], [1, 0]]);
       g.glow.flat(-12, -2, 12, 13, 0.06, { c: [0.95, 0.98, 1], mat: 5, lay: L.GLOW });
       city.nobori(g.det, -9.5, 11, 0); city.nobori(g.det, 9.5, 11, 0);
       g.det.cbox(7, 0.5, 11.4, 1.4, 1.0, 0.6, { c: [0.3, 0.35, 0.4] }); // ゴミ箱

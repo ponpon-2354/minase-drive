@@ -1,5 +1,5 @@
 // テクスチャ配列（256x256 レイヤー）をCanvasで手続き生成。アルファ = 夜間発光マスク
-import { rng } from './math.js?v=0.6.2';
+import { rng } from './math.js?v=0.7.0';
 export const TS = 256;
 export const L = {};
 const layers = []; // {name, draw(ctx, img)}
@@ -91,7 +91,7 @@ export const SIGNS = [
   ['PARKSIGN', '水瀬中央公園', '#1d6b3a', '#ffffff', 'PARK', '#ffffff'],
 ];
 SIGNS.forEach((s, i) => L['SG_' + s[0]] = names.length + i);
-// ナンバープレートのアトラス（1レイヤーに2列×4行＝8枚）と、街の生成後に描く動的レイヤー（案内標識・電停名・橋名板など）
+// ナンバープレートのアトラス（1レイヤーに2列×4行＝8枚）と、街の生成後に描く動的レイヤー（案内標識・橋名板など）
 export const PLATES = { k580: 4, k480: 1, w500: 4, w300: 2, w400: 1, w100: 1, g500: 1 };
 const EXTRA = [];
 for (const [cls, n] of Object.entries(PLATES)) for (let k = 0; k < n; k++) EXTRA.push(['PL', cls, k]);
@@ -249,8 +249,14 @@ function drawLayer(i, ctx) {
       for (let x = 0; x < TS; x += 12) px(img, x, 0, 4, TS, 170, 174, 178, 0); noise(img, 6, R); break;
     case 'FIELD': fill(176, 150, 112, 0); noise(img, 26, R); break;
     case 'TRAINWIN':
-      fill(225, 228, 230, 0); px(img, 0, 150, TS, 22, 42, 63, 95, 0); px(img, 0, 172, TS, 6, 232, 163, 61, 0);
-      for (let x = 10; x < TS; x += 64) px(img, x, 50, 48, 70, 70, 90, 105, 255); break;
+      // 修正95：遠くからでも電車と分かる塗装（白い車体・濃い窓の帯・水瀬線グリーンの太帯・オレンジの細帯・ドア）
+      fill(236, 238, 240, 0);
+      px(img, 0, 46, TS, 74, 28, 34, 44, 255); // 窓の帯（濃いガラス）
+      for (let x = 0; x < TS; x += 64) px(img, x, 46, 7, 74, 210, 214, 218, 0); // 窓の柱
+      px(img, 0, 128, TS, 40, 24, 140, 96, 0); px(img, 0, 170, TS, 7, 238, 150, 40, 0); // 太帯・細帯
+      px(img, 196, 30, 50, 200, 120, 124, 130, 0); px(img, 200, 34, 42, 192, 226, 228, 230, 0); // ドア（枠）
+      px(img, 205, 50, 15, 60, 28, 34, 44, 255); px(img, 222, 50, 15, 60, 28, 34, 44, 255); px(img, 220, 34, 2, 192, 120, 124, 130, 0); // ドアの窓と合わせ目
+      px(img, 200, 128, 42, 40, 24, 140, 96, 0); break;
     case 'SEAT': fill(48, 48, 52, 0); for (let y = 0; y < TS; y += 20) px(img, 0, y, TS, 3, 30, 30, 32, 0); noise(img, 10, R); break;
     case 'GLOW': {
       const d = img.data;
@@ -368,10 +374,11 @@ function drawLayer(i, ctx) {
     ctx.fillStyle = s[2]; ctx.fillRect(0, 0, TS, TS);
     ctx.fillStyle = s[5]; ctx.fillRect(0, TS - 18, TS, 18);
     ctx.save(); ctx.scale(1, a);
-    ctx.font = `700 40px ${FONT}`; const w = ctx.measureText(s[1]).width;
-    const sz = Math.min(40, 40 * 200 / Math.max(1, w));
-    T(s[1], s[4] ? 142 : 128, 28, sz, s[3]);
-    if (s[4]) T(s[4], 26, 30, s[4].length > 3 ? 9 : 22, s[5]);
+    // 修正97-1：店名は左の小さな英字ラベルと重ならない幅に収める（ラベルあり：x=62〜246、なし：x=14〜242）
+    ctx.font = `700 40px ${FONT}`; const w = ctx.measureText(s[1]).width, maxW = s[4] ? 184 : 228;
+    const sz = Math.min(40, 40 * maxW / Math.max(1, w));
+    T(s[1], s[4] ? 154 : 128, 28, sz, s[3]);
+    if (s[4]) { ctx.font = `700 22px ${FONT}`; const lw = ctx.measureText(s[4]).width; T(s[4], 30, 30, Math.min(22, 22 * 52 / Math.max(1, lw)), s[5]); }
     ctx.restore();
     const im = ctx.getImageData(0, 0, TS, TS); for (let k = 3; k < im.data.length; k += 4) im.data[k] = 255;
     return im.data;
