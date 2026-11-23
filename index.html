@@ -83,17 +83,63 @@ select,input[type=range]{width:100%;font:inherit;font-size:16px;min-height:36px;
 #bA .eco{position:absolute;bottom:8px;left:0;right:0;text-align:center;font-size:11px;color:#bff5cf;pointer-events:none}
 #bA .eco2{position:absolute;bottom:38%;left:6px;right:6px;border-top:1px dashed rgba(255,255,255,.45);pointer-events:none}
 #bA.keep{border-color:#5fe08a;box-shadow:0 0 12px rgba(95,224,138,.8)}
-#tWL,#tWR{width:52px;height:46px;font-size:20px;bottom:calc(var(--sb) + 168px)}
-#tWL{left:var(--sl)}#tWR{right:var(--sr);bottom:calc(var(--sb) + min(42vh,200px) + 12px)}
+/* 修正100：速度キープまでの進み具合（上端のバーが1.0秒で満ちる）と作動時の点滅 */
+#bA .kpw{position:absolute;top:30px;left:8px;right:8px;height:7px;border-radius:4px;background:rgba(255,255,255,.18);opacity:0;transition:opacity .15s;pointer-events:none}
+#bA .kp{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:4px;background:#5fe08a}
+#bA .kpt{position:absolute;top:40px;left:0;right:0;text-align:center;font-size:10px;color:#cfe;opacity:0;pointer-events:none}
+#bA.arm .kpw,#bA.arm .kpt{opacity:1}
+#bA.keep .kpw{opacity:1}#bA.keep .kp{width:100%!important}
+#bA.flash{animation:kflash .7s ease-out}
+@keyframes kflash{0%{background:rgba(95,224,138,.85)}100%{background:rgba(0,0,0,.35)}}
+/* 修正99-1：左右のウインカーは同じ高さ（左のブレーキ列とアクセルの高いほうの上） */
+#tWL,#tWR{width:52px;height:46px;font-size:20px;bottom:calc(var(--sb) + max(168px, min(42vh,200px) + 12px))}
+#tWL{left:var(--sl)}#tWR{right:var(--sr)}
 #tWL.on,#tWR.on{background:rgba(80,200,90,.6)}
 .tops{position:absolute;left:calc(max(10px,env(safe-area-inset-left)) + 140px);right:var(--sr);top:var(--st);display:flex;gap:5px;pointer-events:auto;flex-wrap:wrap;justify-content:flex-end}
 .tops .tb{position:static;width:auto;min-width:44px;height:40px;padding:0 9px;font-size:12.5px;border-radius:8px}
 body.pc #spd{right:max(14px,env(safe-area-inset-right))}
-@media (orientation:portrait){#info{top:calc(max(8px,env(safe-area-inset-top)) + 92px);left:max(12px,env(safe-area-inset-left))!important;top:calc(max(8px,env(safe-area-inset-top)) + 142px)}#bA{height:min(30vh,210px)}#tWR{bottom:calc(var(--sb) + min(30vh,210px) + 12px)}}
+@media (orientation:portrait){#info{top:calc(max(8px,env(safe-area-inset-top)) + 92px);left:max(12px,env(safe-area-inset-left))!important;top:calc(max(8px,env(safe-area-inset-top)) + 142px)}#bA{height:min(30vh,210px)}#tWL,#tWR{bottom:calc(var(--sb) + max(168px, min(30vh,210px) + 12px))}}
 #bench{z-index:5;background:rgba(0,0,0,.4)}
 #load{flex-direction:column;gap:12px;background:#000}
 #load .bar{width:min(320px,80vw);height:6px;background:#222;border-radius:3px;overflow:hidden}#load .bar i{display:block;height:100%;width:0;background:var(--amb);transition:width .2s}
 #err{color:#ff8a7a;max-width:90vw;text-align:center}
+/* v0.7.0 長距離ドライブ */
+#title .menu button.ldb{background:linear-gradient(90deg,rgba(25,195,160,.85),rgba(30,120,200,.85));color:#fff;border-color:#19c3a0}
+#ldset{justify-content:flex-end;align-items:stretch;background:linear-gradient(90deg,rgba(0,0,0,0) 30%,rgba(0,0,0,.35))}
+#ldset .panel{width:min(600px,64vw);max-height:100%}
+@media (orientation:portrait){#ldset{align-items:flex-end}#ldset .panel{width:100%;max-height:62%}}
+.lds{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}
+.ldsc{display:flex;flex-direction:column;gap:2px;padding:4px;min-height:0;text-align:left;letter-spacing:0}.ldsc canvas{width:100%;height:auto;border-radius:3px;display:block}.ldsc b{font-size:12px}.ldsc span{font-size:10px;font-weight:500;opacity:.8;line-height:1.3}
+.ldsc.on{border-color:var(--amb);box-shadow:0 0 0 2px rgba(255,182,58,.5);background:rgba(255,182,58,.12)}
+@media (max-width:640px){.lds{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.ldn{display:flex;gap:6px;align-items:center;margin:4px 0;flex-wrap:wrap}.ldn b{margin-right:4px}.ldn button{min-height:36px;padding:4px 10px}.ldn button.on{background:var(--amb);color:#1a1205}
+.ldp{display:grid;grid-template-columns:5em repeat(4,minmax(0,1fr));gap:4px;align-items:center;margin:4px 0}.ldp select{font-size:13px;min-height:34px;padding:0 2px}
+@media (max-width:520px){.ldp{grid-template-columns:repeat(2,minmax(0,1fr))}.ldp b{grid-column:1/-1}}
+.lderr{color:#ffb0a0;min-height:1.3em;font-size:13px;font-weight:700}
+.ldt{width:100%;border-collapse:collapse;font-size:14px;margin:6px 0}.ldt th{text-align:left;color:var(--amb);font-weight:700;padding:4px 8px 4px 0;white-space:nowrap;vertical-align:top;width:6.5em}.ldt td{padding:4px 0;border-bottom:1px solid rgba(255,255,255,.08)}
+#ldhud{position:absolute;right:max(10px,env(safe-area-inset-right));top:calc(max(8px,env(safe-area-inset-top)) + 46px);background:rgba(10,14,20,.72);border:1px solid rgba(255,255,255,.15);border-radius:6px;padding:5px 9px;font-size:12px;line-height:1.35;display:none;min-width:220px;max-width:46vw;text-shadow:0 1px 2px #000}
+body.pc #ldhud{top:max(10px,env(safe-area-inset-top))}
+body.ld #ldhud{display:block}body.ld #info{display:none}
+#ldhud .r{display:flex;justify-content:space-between;gap:10px}#ldhud .r b{color:var(--amb);font-weight:700}#ldhud .big{font-size:17px;font-weight:800}
+#ldhud .fat{height:7px;background:rgba(255,255,255,.15);border-radius:4px;overflow:hidden;margin:2px 0}#ldhud .fat i{display:block;height:100%;width:0;background:#7fe08a}
+#ldhud.warn{border-color:#ff8a3a}#ldhud.alert{border-color:#ff4b3a;animation:ldal 1s infinite}#ldhud.alert #ldFat{color:#ff6a5a;font-weight:900;font-size:14px}
+/* スマホ横画面：HUDを上中央（ミニマップとウインカーの間）に小さく、案内（トースト）はその下へ */
+@media (max-height:500px){body.ld:not(.pc) #ldhud{left:50%;right:auto;transform:translateX(-50%);top:calc(max(6px,env(safe-area-inset-top)) + 40px);font-size:10.5px;line-height:1.22;padding:3px 7px;min-width:0;width:min(250px,40vw);max-width:none}
+ body.ld:not(.pc) #ldhud .big{font-size:14px} body.ld:not(.pc) #ldhud .fat{height:5px;margin:1px 0}
+ body.ld:not(.pc) #toast{top:auto;bottom:calc(30% + env(safe-area-inset-bottom));white-space:normal;max-width:48vw;text-align:center;font-size:13px}}
+@keyframes ldal{50%{box-shadow:0 0 14px rgba(255,75,58,.9)}}
+@media (orientation:portrait){#ldhud{top:calc(max(8px,env(safe-area-inset-top)) + 142px);max-width:60vw}}
+#cut{position:fixed;inset:0;display:none;z-index:8;pointer-events:none}#cut.on{display:block}
+#cutFade{position:absolute;inset:0;background:#000;opacity:1}
+#cut .bars{position:absolute;left:0;right:0;height:7vh;background:#000}#cut .bars.t{top:0}#cut .bars.b{bottom:0}
+#cutTitle{position:absolute;left:0;right:0;top:16%;text-align:center;font-size:clamp(20px,4vw,34px);font-weight:800;color:#fff;text-shadow:0 2px 10px #000;opacity:0;transition:opacity .8s}#cutTitle.on{opacity:1}
+#cutSub{position:absolute;left:8%;right:8%;bottom:calc(9vh + env(safe-area-inset-bottom));text-align:center;font-size:clamp(14px,2.6vw,20px);font-weight:700;color:#fff;text-shadow:0 2px 4px #000,0 0 8px #000}#cutSub b{color:var(--amb);margin-right:4px}#cutSub i{font-style:normal;color:#e6f0ff}
+#cutInfo{position:absolute;left:max(12px,env(safe-area-inset-left));top:calc(7vh + 8px);font-weight:800;color:#fff;text-shadow:0 1px 3px #000}
+#cutSkip{position:absolute;right:max(12px,env(safe-area-inset-right));top:calc(7vh + 6px);pointer-events:auto;background:rgba(0,0,0,.55)}
+#cut.photo::after{content:'記念写真';position:absolute;inset:12% 18%;border:6px solid #fff;box-shadow:0 0 0 2000px rgba(0,0,0,.25);color:#fff;font-weight:800;display:flex;align-items:flex-end;justify-content:flex-end;padding:8px 12px;font-size:18px}
+#cut.flash #cutFade{opacity:.9!important;background:#fff}
+#ldclear .panel{text-align:center}.ldclear{font-size:clamp(40px,9vw,72px);font-weight:900;color:#fff;letter-spacing:.12em;text-shadow:0 3px 0 #b5461a,0 6px 18px rgba(0,0,0,.7)}
+#ldclear .ldt{text-align:left}
 @media (prefers-reduced-motion:reduce){#toast{transition:none}}
 </style>
 </head>
@@ -106,12 +152,14 @@ body.pc #spd{right:max(14px,env(safe-area-inset-right))}
   <div class="logo"><b>水瀬市ドライブ</b><span>MINASE DRIVE ・ 地方都市オープンワールド</span></div>
   <div class="menu">
     <button id="mContinue" class="pri" hidden>CONTINUE（つづきから）</button>
-    <button id="mStart">GAME START</button>
+    <button id="mStart">市街地散策（GAME START）</button>
+    <button id="mLD" class="ldb">長距離ドライブ（四季の観光旅行）</button>
+    <button id="mLDCont" hidden>長距離ドライブのつづき</button>
     <button id="mVehicle">VEHICLE SELECT</button>
     <button id="mSettings">SETTINGS</button>
     <button id="mHow">HOW TO PLAY</button>
   </div>
-  <div class="note">開発版 v0.6.2（約4km四方：市街地・郊外・河川・田園・峠）／ 横画面推奨</div>
+  <div class="note">開発版 v0.7.0（市街地散策：約4km四方 ／ 長距離ドライブ：400km・四季4コース）／ 横画面推奨</div>
 </div>
 
 <div id="select" class="scr">
@@ -135,6 +183,7 @@ body.pc #spd{right:max(14px,env(safe-area-inset-right))}
     <div class="row"><label for="sCamH">カメラ高さ</label><input type="range" id="sCamH" min="1.2" max="4" step="0.1"></div>
     <div class="row"><label for="sNpc">交通量</label><select id="sNpc"><option value="0.7">少なめ（×0.7）</option><option value="1">標準（×1.0）</option><option value="1.2">多め（×1.2）</option></select></div>
     <div class="row"><label for="sLim">制限速度リミッター</label><select id="sLim"><option value="0">OFF</option><option value="1">ON（道路の制限速度を超えない）</option></select></div>
+    <div class="row note" style="display:block;font-size:11px;opacity:.8">リミッターは前進のときだけ働きます（後退はもともと低速のため対象外）。生活道路は30km/h、農道は40km/h、ほかは道路標識の制限速度。</div>
     <div class="row"><label for="sAc">エアコン</label><select id="sAc"><option value="0">OFF</option><option value="1">ON（わずかに力が落ちる）</option></select></div>
     <div class="row"><label for="sIs">アイドリングストップ</label><select id="sIs"><option value="1">ON</option><option value="0">OFF</option></select></div>
     <div class="row"><label for="sAeb">衝突被害軽減ブレーキ</label><select id="sAeb"><option value="1">ON</option><option value="0">OFF</option></select></div>
@@ -156,6 +205,7 @@ body.pc #spd{right:max(14px,env(safe-area-inset-right))}
 <div id="howto" class="scr">
   <div class="panel howto">
     <h2>HOW TO PLAY</h2>
+    <p><b>長距離ドライブ</b>：タイトルの「長距離ドライブ」で季節・人数・同乗者・座席を決めて出発。現実の45分がゲーム内の24時間、400kmを約5時間で走ります。連続運転が4時間に近づいたら、PA・SA・道の駅の減速車線から入口へ入ると45分の休憩（ムービーはスキップ可）。目的地に着くと到着ムービーとクリア画面。</p>
     <p><b>スマホ</b>：左下 ◀ ▶ でハンドル、その上に <b>ブレーキ</b> と <b>D/R</b>（前進/後退、停止中に切替）。右下の <b>アクセル</b> は縦にスライド：下の緑の部分は<b>エコ運転</b>、上へずらすほど加速。指を1.5秒止めると<b>速度キープ</b>（ブレーキかスライドで解除）。ペダルを離すとクリープでゆっくり進み、ブレーキで止まり続けます。</p>
     <p>上のボタン：<b>視点</b>（後方→運転席→ボンネット）、<b>ライト</b>（自動/ON/OFF）、<b>ホーン</b>、<b>BGM</b>、<b>地図</b>、<b>II</b> メニュー。<b>◁ ▷</b> ウインカーは画面の左右の端。</p>
     <p><b>キーボード</b>：<kbd>↑</kbd><kbd>W</kbd> アクセル　<kbd>↓</kbd><kbd>S</kbd> ブレーキ　<kbd>←</kbd><kbd>→</kbd> ハンドル　<kbd>C</kbd> 視点　<kbd>L</kbd> ライト　<kbd>Q</kbd><kbd>E</kbd> ウインカー　<kbd>R</kbd> 前進/後退　<kbd>K</kbd> 速度キープ　<kbd>H</kbd> ホーン　<kbd>Esc</kbd> メニュー</p>
@@ -183,6 +233,9 @@ body.pc #spd{right:max(14px,env(safe-area-inset-right))}
   </div>
 </div>
 
+<div id="ldset" class="scr"><div class="panel" id="ldsBody"></div></div>
+<div id="ldclear" class="scr"><div class="panel"><div id="ldcBody"></div><div class="btns"><button id="ldcTitle">タイトルへ</button><button id="ldcSame" class="pri">同じ季節でもう一度</button><button id="ldcOther">別の季節で</button></div></div></div>
+<div id="cut"><div id="cutFade"></div><div class="bars t"></div><div class="bars b"></div><div id="cutTitle"></div><div id="cutInfo"></div><div id="cutSub"></div><button id="cutSkip">スキップ ▶▶</button></div>
 <div id="bench" class="scr"><div class="panel"><h2>性能測定の結果</h2><pre id="benchOut" style="white-space:pre-wrap;font-size:13px;user-select:text;-webkit-user-select:text"></pre><div class="btns"><button id="benchCopy" class="pri">結果をコピー</button><button id="benchClose">閉じる</button></div></div></div>
 <div id="hud">
   <canvas id="mm" width="260" height="260"></canvas>
@@ -190,6 +243,11 @@ body.pc #spd{right:max(14px,env(safe-area-inset-right))}
   <div id="spd"><div class="v" id="sV">0</div><div class="u">km/h</div><div id="rpm"><i id="rpmI"></i></div>
     <div id="ind"><b id="iWL">◀</b><b id="iLight">ライト</b><b id="gear">D</b><b id="iWR">▶</b></div><div id="ind2"><b id="iEco">ECO</b><b id="iIS">A アイドリングストップ</b><b id="iKeep">キープ</b><b id="iLim">LIM</b><b id="iAc">A/C</b></div></div>
   <div id="nav"></div>
+  <div id="ldhud"><div class="r"><span class="big" id="ldTime">09:00</span><span id="ldWhere"></span></div>
+    <div class="r"><span>目的地 <b id="ldDest"></b></span><span>あと <b id="ldRemain"></b></span></div>
+    <div class="r"><span>到着予想 <b id="ldEta"></b></span><span>連続運転 <b id="ldCont"></b></span></div>
+    <div class="r"><span>疲労度</span><span id="ldFat"></span></div><div class="fat"><i id="ldFatBar"></i></div>
+    <div class="r"><span>次の休憩</span><b id="ldNext"></b></div></div>
   <div id="iAeb">ブレーキ!</div>
   <div id="dbg"></div>
   <div id="toast"></div>
@@ -199,11 +257,11 @@ body.pc #spd{right:max(14px,env(safe-area-inset-right))}
 <div id="touch">
   <div class="tb" id="bL">◀</div><div class="tb" id="bR">▶</div>
   <div class="tb" id="bB">ブレーキ</div><div class="tb" id="bDR">D</div>
-  <div class="tb" id="bA"><i class="lv" id="bAlv"></i><span>アクセル</span><i class="eco2"></i><span class="eco">ECO</span></div>
+  <div class="tb" id="bA"><i class="lv" id="bAlv"></i><span>アクセル</span><i class="kpw"><i class="kp" id="bAkp"></i></i><span class="kpt">指を止めるとキープ</span><i class="eco2"></i><span class="eco">ECO</span></div>
   <div class="tb" id="tWL">◁</div><div class="tb" id="tWR">▷</div>
   <div class="tops"><div class="tb" id="tCam">視点</div><div class="tb" id="tLight">ライト</div><div class="tb" id="tHorn">ホーン</div><div class="tb" id="tBgm">BGM</div><div class="tb" id="tMap">地図</div><div class="tb" id="tMenu">II</div></div>
 </div>
 
-<script type="module" src="src/main.js?v=0.6.2"></script>
+<script type="module" src="src/main.js?v=0.7.0"></script>
 </body>
 </html>
