@@ -1,6 +1,6 @@
 // 軽量WebGL2レンダラー（PS2風：頂点カラー＋ランバート＋フォグ＋単一スポットライト）
-import { STRIDE } from './geo.js?v=0.7.0';
-import { TS, LAYER_COUNT, buildLayers } from './textures.js?v=0.7.0';
+import { STRIDE } from './geo.js?v=0.8.0';
+import { TS, LAYER_COUNT, buildLayers } from './textures.js?v=0.8.0';
 
 const VS = `#version 300 es
 layout(location=0) in vec3 aP; layout(location=1) in vec3 aN; layout(location=2) in vec3 aC;
@@ -18,7 +18,7 @@ uniform float uFogN, uFogF, uNight, uWet, uHOn, uAlpha;
 uniform vec4 uCarL, uPlate; uniform vec2 uLit; uniform float uRev, uUrban, uTime;
 out vec4 o;
 void main(){
-  int m=int(vMat+.5);
+  int m=int(vMat+.5); bool land=m>=100; if(land) m-=100; // 修正104：mat+100 は「遠くからも見える目印」（休憩施設・目的地の建物と看板）。霧のかかり方だけを変える
   vec4 t = m==19 && uPlate.z>=0. ? texture(uTex, vec3(vUV*vec2(.5,.25)+uPlate.xy, uPlate.z)) : m==21 ? texture(uTex, vec3(vUV+vec2(0.,uTime*.03), vLay)) : texture(uTex, vec3(vUV, vLay));
   if(m==17 && t.a<.5) discard;
   if(m==22 && uWet<.3) discard;
@@ -60,6 +60,7 @@ void main(){
   float f=clamp((dist-uFogN)/(uFogF-uFogN),0.,1.);
   if(m==9) f=.45+uWet*.3;
   if(m==23){ f=.3+.55*clamp((dist-uFogF*.7)/2500.,0.,1.); c+=vec3(1.,.85,.6)*uNight*uUrban*.18*step(.5,fract(vW.y*.33)); }
+  if(land) f=min(f,.22+.6*clamp((dist-300.)/3200.,0.,1.)); // 近くでは周りと同じ霧、遠くでは遠景の山並みのように霞んで見える（詳細モデルと遠景モデルで同じ式なので切り替わりが目立たない）
   o=vec4(mix(c,uFog,f),uAlpha);
 }`;
 

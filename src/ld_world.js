@@ -4,11 +4,11 @@
 // 距離と時間の約束（第5章）：ゲーム内の時間は現実の32倍（現実45分＝ゲーム内24時間）。
 // 道路の実距離も 1/32 に縮めて作り、表示する距離は「実距離×32」。時速80kmで走ると表示上も時速80kmで、
 // 本線12,500m（表示400km）を5時間（現実9分22秒）で走り切り、09:00出発なら14:00に着く。
-import { GB } from './geo.js?v=0.7.0';
-import { L, FONT } from './textures.js?v=0.7.0';
-import { City, CH } from './city.js?v=0.7.0';
-import { rng, clamp, lerp } from './math.js?v=0.7.0';
-import { MODELS, pickColor, isCommercial, plateClass } from './carmodels.js?v=0.7.0';
+import { GB } from './geo.js?v=0.8.0';
+import { L, FONT } from './textures.js?v=0.8.0';
+import { City, CH } from './city.js?v=0.8.0';
+import { rng, clamp, lerp } from './math.js?v=0.8.0';
+import { MODELS, pickColor, isCommercial, plateClass } from './carmodels.js?v=0.8.0';
 
 export const DIST_SCALE = 32, TIME_SCALE = 32;
 export const ROUTE_LEN = 12500;   // 出発点 s=0 から目的地の駐車場入口まで（表示400km）
@@ -58,6 +58,9 @@ export const SEASONS = {
 };
 
 const smooth = t => t * t * (3 - 2 * t);
+// 修正104：遠くからも見える目印（mat+100：霧のかかり方だけ変える。renderer.js 参照）
+const LM = o => ({ ...o, mat: (o.mat || 0) + 100 });
+const markLM = (gb, n0) => { const a = gb.a; for (let i = n0 + 11; i < a.length; i += 13) if (a[i] < 100) a[i] += 100; }; // GB の頂点（13要素。12番目が mat）
 export class LongWorld {
   constructor(season) {
     const W = Object.create(City.prototype); // City の当たり判定・チャンク・壁の処理を流用（市街地の生成は行わない）
@@ -165,6 +168,8 @@ export class LongWorld {
     for (const f of this.fac || []) if (f.side * u > 9 && f.side * u < 135 && s > f.s - 230 && s < f.s + 450) { const d = Math.max(0, f.side * u - 120, f.s - 200 - s, s - (f.s + 420)); return f.y - 0.05 + d * 0.3; }
     if (s > ROUTE_LEN - 20 || s < -100) return ry - 0.05;
     const w = this.zoneW(s, side); let h = 0; for (const t in w) h += w[t] * this.typeH(t, s, a, ry);
+    // 修正104：休憩施設の手前 600m は、施設側の山・雪の壁を少しずつ低くして、遠くから建物と看板が見えるようにする（崖や雪の壁で隠れてポップインしない）
+    for (const f of this.fac || []) if (f.side * u > 12 && f.side * u < 260 && s > f.s - 600 && s <= f.s - 230) { const t = smooth(clamp((s - (f.s - 600)) / 300, 0, 1)), flat = Math.min(h, ry - 0.4 + Math.max(0, f.side * u - 150) * 0.08); h = lerp(h, flat, t); }
     // 道路の肩（|u| 10.5〜13）は道路の高さから地形へなめらかに
     if (a < 13) h = lerp(ry - 0.05, h, smooth(clamp((a - ROAD_HW) / 2.5, 0, 1)));
     return h;
@@ -236,7 +241,33 @@ export class LongWorld {
     // 出発地の奥（s=-150）と、目的地の駐車場の囲い
     { const a = this.pos(S_START + 1, -10), b = this.pos(S_START + 1, 10); this.W.addWall(a[0], a[2], b[0], b[2], -50, 500); }
     for (const f of this.fac) this.facility(f);
-    this.startArea(); this.destination(); this.signs(); this.farView();
+    this.startArea(); this.destination(); this.destFar(); this.signs(); this.farView();
+    this.feats = this.buildFeats();
+  }
+  // 修正117：ナビの観光案内・同乗者の反応の対象になる「実際に配置されている地物」の表（季節×区間×地物）。
+  // 載せるのは、このルートに実物のジオメトリを置いているものだけ：橋（アーチと橋名板）・トンネル（坑口と名板）・地形タイプの区間（その区間に専用の景観を置いている：桜並木・桜のトンネル・川・海・港・高原・渓谷・紅葉のトンネル・集落・雪原・氷の湖・雪の壁・温泉街・城下町）・目的地。
+  // side：+1 は zones の3番目（u>0 側）、-1 は4番目、0 は両側・道路上。案内の「左手／右手」はこの値から作る（u>0 が進行方向の左）
+  buildFeats() {
+    const D = this.D, out = [], add = (id, kind, name, s0, s1, side = 0) => out.push({ id, kind, name, s0, s1, side });
+    for (const [a, b, nm] of D.bridges) add('brg:' + nm, 'bridge', nm, a, b);
+    for (const [a, b, nm] of D.tunnels) add('tun:' + nm, 'tunnel', nm, a, b);
+    const SHOW = { sakura: '桜並木', sakuraT: '桜のトンネル', river: '桜川', sea: '海', bay: '入り江', harbor: '港町・汐見の漁港', plateau: '青凪高原', gorge: 'もみじ渓谷', mapleT: '紅葉のトンネル', village: '山あいの集落・楓見', snowfield: '白銀の雪原', lake: '氷鏡湖', snowwall: '雪の壁', onsen: '雪灯温泉郷', town: '城下町' };
+    const secName = s => { let n = ''; for (const [ss, nm] of D.sections) if (ss <= s + 1) n = nm; return n; };
+    for (const z of D.zones) for (const [k, side] of [[z[2], 1], [z[3], -1]]) {
+      if (!SHOW[k] || z[1] - z[0] < 150) continue;
+      if (z[2] === z[3] && side < 0) continue; // 両側同じなら1件（side 0）
+      if (k === 'river' && this.season !== 'spring') continue;
+      if (k === 'town' && this.season !== 'spring') continue; // 夏の出発地の町並みは見どころにしない
+      const sn = secName(z[0] + 1), nm = (k === 'gorge' || k === 'sea') && sn && !/トンネル|橋/.test(sn) ? sn : SHOW[k];
+      if (k === 'snowfield' && out.some(o => o.kind === 'snowfield')) continue; // 雪原は全線に続くので最初の区間だけ
+      const id = k + ':' + z[0];
+      // 同じ種類が連続する区間は1つにまとめる
+      const prev = out.find(o => o.kind === k && Math.abs(o.s1 - z[0]) < 1 && o.side === (z[2] === z[3] ? 0 : side)); if (prev) { prev.s1 = z[1]; continue; }
+      add(id, k, nm, z[0], z[1], z[2] === z[3] ? 0 : side);
+    }
+    if (this.season === 'autumn') add('maple:hill', 'maple', '紅葉の丘', 1000, 2000, 0); // 秋は全線が紅葉の木（tree:'maple'）。丘の区間を見どころに
+    add('dest', 'dest', D.dest, ROUTE_LEN - 1500, ROUTE_LEN, 0);
+    return out.sort((p, q) => p.s0 - q.s0);
   }
   segment(g, s0, s1) {
     const season = this.season, D = this.D, R = rng(Math.floor(s0) * 7 + 3), ds = 10, W = season === 'winter';
@@ -278,6 +309,8 @@ export class LongWorld {
       if (Math.round(s) % 40 === 0) for (const u of [-5, 5]) { const p = this.pos(s, u), gy = this.terrainH(s, u > 0 ? 14 : -14) - 4; g.s.box(p[0] - 1, gy, p[2] - 1, p[0] + 1, p[1] - 1.4, p[2] + 1, { c: [0.72, 0.72, 0.7] }); }
       const under = (this.terrainH(s, 14) + this.terrainH(s, -14)) / 2 - 1;
       g.s.quadN([pa[0], under, pa[2]], [pb[0], under, pb[2]], [qb[0], under, qb[2]], [qa[0], under, qa[2]], [0, 1, 0], { c: this.season === 'winter' ? [0.92, 0.94, 0.98] : [0.5, 0.6, 0.45], lay: this.season === 'winter' ? L.WHITE : L.GRASS }); }
+    // 修正117：橋だと一目で分かるように、両側にアーチ（上路から見える鋼製アーチと吊り材）を架け、橋の両端に橋名板を付ける
+    for (const B of this.D.bridges) if (s1 > B[0] && s0 < B[1]) this.bridgeArch(g, Math.max(s0, B[0]), Math.min(s1, B[1]), B);
     // トンネル：側壁・天井・照明。坑口の上は山肌でふさぐ
     if (tun) for (let s = s0; s < s1; s += 10) { const e = s + 10, wallC = { c: [0.85, 0.84, 0.8], lay: L.TUNNELWALL };
       for (const side of [1, -1]) { const p = this.pos(s, side * 10.4), q = this.pos(e, side * 10.4); g.s.quadN([p[0], p[1], p[2]], [q[0], q[1], q[2]], [q[0], q[1] + 6.2, q[2]], [p[0], p[1] + 6.2, p[2]], [-side, 0, 0], wallC);
@@ -297,9 +330,25 @@ export class LongWorld {
     this.terrainSeg(g, s0, s1);
     this.scenery(g, s0, s1, R);
   }
+  // 修正117：橋のアーチ（チャンクの範囲 s0〜s1 の分だけ作る）。B=[始点, 終点, 橋名]。アーチの高さは橋長の約12%（6〜22m）
+  bridgeArch(g, s0, s1, B) {
+    const [a, b, nm] = B, L0 = b - a, rise = Math.min(22, Math.max(6, L0 * 0.12)), col = { c: { spring: [0.92, 0.45, 0.5], summer: [0.95, 0.96, 0.98], autumn: [0.85, 0.3, 0.18], winter: [0.3, 0.5, 0.85] }[this.season] || [0.8, 0.8, 0.8] };
+    const H = s => { const t = clamp((s - a) / L0, 0, 1); return 1.1 + rise * 4 * t * (1 - t); };
+    for (const side of [1, -1]) { const u = side * 10.6;
+      for (let s = s0; s < s1 - 0.01; s += 5) { const e = Math.min(s1, s + 5); g.s.beam(this.pos(s, u, H(s)), this.pos(e, u, H(e)), 0.45, col);
+        if (Math.round(s - a) % 10 === 0 && H(s) > 2.2) g.s.beam(this.pos(s, u, 1.1), this.pos(s, u, H(s)), 0.07, { c: col.c.map(v => v * 0.85) }); }
+    }
+    // 上の横つなぎ（車両の上 7m 以上の所だけ）
+    for (let s = Math.ceil((s0 - a) / 20) * 20 + a; s < s1; s += 20) if (H(s) > 7.5) g.s.beam(this.pos(s, -10.6, H(s)), this.pos(s, 10.6, H(s)), 0.3, col);
+    // 橋名板（両端の親柱）
+    const lay = (this.tunnelSign || (this.tunnelSign = {}))['br:' + nm] || (this.tunnelSign['br:' + nm] = this.greenSign([nm], { bg: '#3b3a36', scale: 0.8 }));
+    for (const sp of [a, b]) if (sp >= s0 && sp < s1) for (const side of [1, -1]) { const p = this.pos(sp, side * 10.6), y = p[1];
+      g.s.box(p[0] - 0.5, y, p[2] - 0.5, p[0] + 0.5, y + 2.6, p[2] + 0.5, { c: [0.7, 0.68, 0.64] });
+      const dir = sp === a ? -1 : 1, q0 = this.pos(sp + dir * 0.52, side * 10.6 - 0.45, 1.3), q1 = this.pos(sp + dir * 0.52, side * 10.6 + 0.45, 1.3); g.s.panel(q0[0], q0[2], q1[0], q1[2], y + 1.3, y + 2.3, 0.03, [0, 0, dir], { c: [1, 1, 1], mat: 16, lay }); }
+  }
   groundCol(k) {
     const sea = this.season, D = this.D;
-    switch (k) { case 'snow': return [0.95, 0.96, 1]; case 'ice': return [0.78, 0.88, 0.95]; case 'sand': return [0.95, 0.88, 0.7]; case 'rock': return [0.62, 0.58, 0.52];
+    switch (k) { case 'snow': return [0.95, 0.96, 1]; case 'ice': return [0.55, 0.74, 0.9]; /* 修正117：凍った湖面は雪原と見分けられる青みの氷色に */ case 'sand': return [0.95, 0.88, 0.7]; case 'rock': return [0.62, 0.58, 0.52];
       case 'field': return sea === 'autumn' ? [0.82, 0.7, 0.4] : [0.75, 0.66, 0.5]; case 'paddy': return sea === 'spring' ? [0.75, 0.82, 0.9] : sea === 'summer' ? [0.55, 0.85, 0.4] : [0.85, 0.75, 0.42];
       case 'forest': return sea === 'autumn' ? [0.95, 0.55, 0.3] : sea === 'winter' ? [0.92, 0.94, 0.98] : sea === 'spring' ? [0.7, 0.85, 0.6] : [0.55, 0.78, 0.5];
       default: return D.grass; }
@@ -376,6 +425,7 @@ export class LongWorld {
       }
       if (best === 'harbor' && side < 0 && R() < 0.6) { const s = s0 + 20, p = this.pos(s, -70), y = 0.3; g.s.box(p[0] - 3, -0.5, p[2] - 12, p[0] + 3, y + 0.4, p[2] + 12, { c: [0.7, 0.7, 0.68] }); const b = this.pos(s, -82); g.s.box(b[0] - 1.6, -0.2, b[2] - 5, b[0] + 1.6, 1.2, b[2] + 5, { c: [0.95, 0.95, 0.95] }); g.s.box(b[0] - 1, 1.2, b[2] - 1, b[0] + 1, 2.8, b[2] + 2, { c: [0.3, 0.45, 0.7] }); }
       if (best === 'onsen' && R() < 0.7) { const p = this.pos(s0 + 25, side * 30), y = this.terrainH(s0 + 25, side * 30); (this.steam || (this.steam = [])).push([p[0], y + 1, p[2]]); }
+      this.extras(g, s0, s1, side, best, R); // 修正104：季節ごとの見どころ（区間ごとに変わる）
       if (best === 'snowwall') { // 雪壁（除雪で積み上がった雪）
         const a = this.pos(s0, side * 10.2), b = this.pos(s1, side * 10.2), c = this.pos(s1, side * 12.5), d = this.pos(s0, side * 12.5), hh = 2.6;
         g.s.quadN([a[0], a[1] + 0.6, a[2]], [b[0], b[1] + 0.6, b[2]], [c[0], c[1] + hh, c[2]], [d[0], d[1] + hh, d[2]], [0, 1, 0], { c: [0.95, 0.96, 1], lay: L.WHITE });
@@ -391,6 +441,68 @@ export class LongWorld {
       const c = Math.cos(at.h), sn = Math.sin(at.h);
       g.det.box(p[0] - 0.04, p[1], p[2] - 0.04, p[0] + 0.04, p[1] + 1.3, p[2] + 0.04, { c: [0.8, 0.8, 0.8] });
       g.det.panel(p[0] - c * 0.25, p[2] + sn * 0.25, p[0] + c * 0.25, p[2] - sn * 0.25, p[1] + 1.3, p[1] + 1.8, 0.05, [-sn, 0, -at.h * 0 - Math.cos(at.h)], { c: [1, 1, 1], mat: 16, lay: l });
+    }
+  }
+  // ---------- 修正104：季節ごとの景観要素（第9章の要素に追加。区間の地形タイプごとに出るものが変わる） ----------
+  // 低ポリの球（雪だるま・かまくら・ひまわりの花など）
+  ball(gb, x, y, z, r, o, n = 6, half = false) { const rows = half ? Math.ceil(n / 2) : n, lo = half ? 0 : -Math.PI / 2, hi = Math.PI / 2, c = [x, y, z];
+    const P = (i, j) => { const ph = lo + (hi - lo) * i / rows, a = j / n * Math.PI * 2; return [x + Math.cos(a) * Math.cos(ph) * r, y + Math.sin(ph) * r, z + Math.sin(a) * Math.cos(ph) * r]; };
+    for (let i = 0; i < rows; i++) for (let j = 0; j < n; j++) { const A = P(i, j), B = P(i, j + 1), C = P(i + 1, j + 1), D = P(i + 1, j); gb.tri(A, C, B, o, [0, 0], [0, 0], [0, 0], c); gb.tri(A, D, C, o, [0, 0], [0, 0], [0, 0], c); } }
+  extras(g, s0, s1, side, best, R) {
+    const se = this.season, at = this.at((s0 + s1) / 2), yaw = at.h, P = (s, u) => { const p = this.pos(s, side * u); return [p[0], this.terrainH(s, side * u), p[2]]; };
+    const tun = this.D.tunnels.some(([a, b]) => s1 > a - 40 && s0 < b + 40), brg = this.inBridgeS((s0 + s1) / 2); if (tun || brg) return;
+    const farmy = best === 'farm' || best === 'hills' || best === 'valley' || best === 'village' || best === 'river';
+    if (se === 'spring') {
+      // 菜の花畑・チューリップ畑（色の帯。遠くからも見えるよう g.s）
+      if (farmy && R() < 0.5) { const s = s0 + 5, u = 22 + R() * 30, tul = R() < 0.4, cols = tul ? [[1, 0.25, 0.3], [1, 0.85, 0.2], [1, 0.55, 0.75], [0.97, 0.97, 0.95]] : [[1, 0.88, 0.15]];
+        for (let r = 0; r < 6; r++) { const a = P(s, u + r * 2.2), b = P(s + 36, u + r * 2.2), c = P(s + 36, u + r * 2.2 + 1.5), d = P(s, u + r * 2.2 + 1.5), col = cols[r % cols.length], h = 0.45;
+          g.s.quadN([a[0], a[1] + h, a[2]], [b[0], b[1] + h, b[2]], [c[0], c[1] + h, c[2]], [d[0], d[1] + h, d[2]], [0, 1, 0], { c: col }); g.s.quadN([a[0], a[1] - 0.1, a[2]], [b[0], b[1] - 0.1, b[2]], [b[0], b[1] + h, b[2]], [a[0], a[1] + h, a[2]], [-side, 0, 0], { c: col.map(v => v * 0.8) }); } }
+      // 鯉のぼりのある家（集落・田園・城下町）
+      if ((farmy || best === 'town') && R() < 0.22) { const s = s0 + 10 + R() * 30, q = P(s, 30 + R() * 20); this.house(g.s, q[0] + 6, q[1], q[2], yaw + Math.PI / 2, R);
+        g.s.cyl(q[0], q[1], q[2], 0.12, 11, 6, { c: [0.85, 0.85, 0.82] }); g.s.cbox(q[0], q[1] + 11.1, q[2], 0.5, 0.25, 0.5, { c: [1, 0.85, 0.2] });
+        const dx = Math.cos(yaw) * side, dz = -Math.sin(yaw) * side; [[0, 0, 0.6], [1, 0.15, 0.15], [0.2, 0.35, 0.95]].forEach((c, k) => { const yy = q[1] + 10 - k * 1.5, L2 = 3.2 - k * 0.5; g.det.setXf(q[0], yy, q[2], yaw + Math.PI / 2); g.det.box(0.1, -0.35, -0.3, 0.1 + L2, 0.35, 0.3, { c }); g.det.box(0.1, -0.12, -0.31, 0.5, 0.12, 0.31, { c: [1, 1, 1] }); g.det.clearXf(); void dx; void dz; }); }
+    }
+    if (se === 'summer') {
+      // ひまわり畑（遠くは黄色い帯、近くは一本ずつの花）
+      if ((best === 'hills' || best === 'plateau') && R() < 0.45) { const s = s0 + 6, u = 20 + R() * 25;
+        for (let r = 0; r < 5; r++) { const a = P(s, u + r * 2.4), b = P(s + 34, u + r * 2.4), c = P(s + 34, u + r * 2.4 + 1.6), d = P(s, u + r * 2.4 + 1.6), h = 1.6; g.s.quadN([a[0], a[1] + h, a[2]], [b[0], b[1] + h, b[2]], [c[0], c[1] + h, c[2]], [d[0], d[1] + h, d[2]], [0, 1, 0], { c: [1, 0.82, 0.1] });
+          g.s.quadN([a[0], a[1], a[2]], [b[0], b[1], b[2]], [b[0], b[1] + h, b[2]], [a[0], a[1] + h, a[2]], [-side, 0, 0], { c: [0.3, 0.55, 0.2] });
+          for (let k = 0; k < 7; k++) { const q = P(s + 2 + k * 5, u + r * 2.4 + 0.8); g.det.cbox(q[0], q[1] + 0.9, q[2], 0.08, 1.8, 0.08, { c: [0.3, 0.5, 0.2] }); g.det.cbox(q[0], q[1] + 1.95, q[2], 0.75, 0.75, 0.2, { c: [1, 0.8, 0.08] }); g.det.cbox(q[0], q[1] + 1.95, q[2], 0.3, 0.3, 0.24, { c: [0.35, 0.22, 0.1] }); } } }
+      // 漁港の船（港町の区間は船を増やす：漁船・小型船、マストと旗）
+      if (best === 'harbor' && side < 0) for (let k = 0; k < 3; k++) { const s = s0 + 8 + k * 15, b = this.pos(s, -(88 + R() * 25)), cols = [[0.95, 0.95, 0.95], [0.2, 0.45, 0.8], [0.85, 0.25, 0.2]], c = cols[(R() * 3) | 0];
+        g.s.setXf(b[0], 0, b[2], yaw + (R() - 0.5) * 0.6); g.s.box(-1.8, -0.2, -5.5, 1.8, 1.1, 5.5, { c }); g.s.box(-1.9, 1.0, -5.6, 1.9, 1.2, 5.6, { c: [0.25, 0.25, 0.28] }); g.s.box(-1.1, 1.2, -2.5, 1.1, 3.0, 0.8, { c: [0.95, 0.95, 0.92] }); g.s.box(-0.07, 3.0, -1, 0.07, 7.5, -0.86, { c: [0.8, 0.8, 0.8] }); g.s.box(0.07, 6.5, -1, 1.3, 7.3, -0.95, { c: [0.95, 0.2, 0.2] }); g.s.clearXf(); }
+    }
+    if (se === 'autumn') {
+      // 柿の木（橙の実）
+      if (farmy && R() < 0.5) for (let k = 0; k < 2; k++) { const q = P(s0 + R() * 50, 18 + R() * 30); g.s.cyl(q[0], q[1], q[2], 0.16, 2.2, 5, { c: [0.35, 0.25, 0.18] }); g.s.cbox(q[0], q[1] + 3.3, q[2], 3.2, 2.2, 3.2, { c: [0.45, 0.4, 0.2], lay: L.TREE });
+        for (let j = 0; j < 9; j++) g.det.cbox(q[0] + (R() - 0.5) * 3.2, q[1] + 2.4 + R() * 2.2, q[2] + (R() - 0.5) * 3.2, 0.28, 0.28, 0.28, { c: [1, 0.48, 0.08] }); }
+      // 稲架け（木組みに稲束を掛けて干す）
+      if ((best === 'farm' || best === 'village' || best === 'valley' || best === 'hills') && R() < 0.45) { const s = s0 + 8, u = 20 + R() * 20;
+        for (let r = 0; r < 2; r++) { const a = P(s, u + r * 7), b = P(s + 30, u + r * 7); for (let k = 0; k <= 5; k++) { const t = k / 5, x = a[0] + (b[0] - a[0]) * t, z = a[2] + (b[2] - a[2]) * t, y = a[1] + (b[1] - a[1]) * t; g.s.box(x - 0.08, y, z - 0.08, x + 0.08, y + 2.3, z + 0.08, { c: [0.45, 0.33, 0.22] }); }
+          g.s.beam([a[0], a[1] + 2.1, a[2]], [b[0], b[1] + 2.1, b[2]], 0.06, { c: [0.45, 0.33, 0.22] });
+          const n = 18; for (let k = 0; k < n; k++) { const t = (k + 0.5) / n, x = a[0] + (b[0] - a[0]) * t, z = a[2] + (b[2] - a[2]) * t, y = a[1] + (b[1] - a[1]) * t; g.s.cbox(x, y + 1.55, z, 0.7, 1.1, 1.4, { c: [0.85, 0.7, 0.32] }); } } }
+      // 渓流の滝（渓谷の区間：崖と白い流れ、滝つぼ）
+      if (best === 'gorge' && R() < 0.22) { const s = s0 + 25, u = 46, top = P(s, u + 8), bot = P(s, u - 2), h = Math.max(10, top[1] - bot[1] + 14), at2 = this.at(s), c = Math.cos(at2.h), sn = Math.sin(at2.h);
+        g.s.setXf(top[0], bot[1], top[2], at2.h + (side > 0 ? Math.PI / 2 : -Math.PI / 2)); g.s.box(-9, -2, 0, 9, h, 6, { c: [0.45, 0.42, 0.38], lay: L.ROCK, side: { lay: L.ROCK, tw: 4, th: 3 } }); g.s.clearXf();
+        const w0 = [top[0] - c * 2.5, top[2] + sn * 2.5], w1 = [top[0] + c * 2.5, top[2] - sn * 2.5], nx = -side * c * 0, d = side > 0 ? -1 : 1, off = [Math.cos(at2.h + Math.PI / 2) * d * -0.2, -Math.sin(at2.h + Math.PI / 2) * d * -0.2]; void nx;
+        g.s.quadN([w0[0] + off[0], bot[1] + 0.3, w0[1] + off[1]], [w1[0] + off[0], bot[1] + 0.3, w1[1] + off[1]], [w1[0] + off[0], bot[1] + h - 1, w1[1] + off[1]], [w0[0] + off[0], bot[1] + h - 1, w0[1] + off[1]], [0, 0, 1], { c: [0.92, 0.96, 1], lay: L.WATER, mat: 21 }, [[0, 4], [1, 4], [1, 0], [0, 0]]);
+        g.s.quadN([w1[0] + off[0], bot[1] + 0.3, w1[1] + off[1]], [w0[0] + off[0], bot[1] + 0.3, w0[1] + off[1]], [w0[0] + off[0], bot[1] + h - 1, w0[1] + off[1]], [w1[0] + off[0], bot[1] + h - 1, w1[1] + off[1]], [0, 0, -1], { c: [0.92, 0.96, 1], lay: L.WATER, mat: 21 }, [[0, 4], [1, 4], [1, 0], [0, 0]]);
+        this.ball(g.s, bot[0], bot[1] - 0.6, bot[2], 4, { c: [0.6, 0.78, 0.85], lay: L.WATER, mat: 21 }, 8, true); }
+    }
+    if (se === 'winter') {
+      // かまくら（中にろうそくの灯り）と雪だるま
+      if ((best === 'snowfield' || best === 'onsen' || best === 'hills' || best === 'lake' || best === 'valley') && R() < 0.35) { const q = P(s0 + R() * 40, 18 + R() * 22); this.ball(g.s, q[0], q[1] - 0.2, q[2], 1.9, { c: [0.97, 0.98, 1] }, 8, true);
+        const at2 = this.at(s0), ex = -Math.cos(at2.h) * side * 1.75, ez = Math.sin(at2.h) * side * 1.75; g.s.cbox(q[0] + ex, q[1] + 0.55, q[2] + ez, 0.9, 1.1, 0.9, { c: [0.12, 0.1, 0.1] }); g.det.cbox(q[0] + ex * 0.9, q[1] + 0.45, q[2] + ez * 0.9, 0.12, 0.2, 0.12, { c: [1, 0.7, 0.35], mat: 18 }); }
+      if ((best === 'snowfield' || best === 'onsen' || best === 'village' || best === 'hills') && R() < 0.35) { const q = P(s0 + R() * 40, 15 + R() * 20); this.ball(g.s, q[0], q[1] + 0.5, q[2], 0.65, { c: [0.98, 0.98, 1] }); this.ball(g.s, q[0], q[1] + 1.4, q[2], 0.42, { c: [0.98, 0.98, 1] }); g.det.cyl(q[0], q[1] + 1.72, q[2], 0.22, 0.3, 6, { c: [0.75, 0.2, 0.15] }); g.det.cbox(q[0] - Math.cos(yaw) * side * 0.4, q[1] + 1.45, q[2] + Math.sin(yaw) * side * 0.4, 0.07, 0.07, 0.07, { c: [0.1, 0.1, 0.1] }); }
+      // 修正117：氷鏡湖（凍った湖）の上のわかさぎ釣りのテント（色とりどりの小屋）と、湖面に積もった雪の縞。湖だと一目で分かるように
+      if (best === 'lake' && R() < 0.75) for (let k = 0; k < 3; k++) { const q = P(s0 + 8 + R() * 34, 45 + R() * 110), cols = [[0.9, 0.25, 0.2], [0.2, 0.45, 0.85], [0.95, 0.6, 0.1], [0.3, 0.65, 0.35]], c = cols[(R() * 4) | 0];
+        g.s.setXf(q[0], q[1], q[2], yaw + R() * 1.5); g.s.box(-1.1, 0, -1.1, 1.1, 1.5, 1.1, { c }); g.s.box(-1.25, 1.5, -1.25, 1.25, 1.75, 1.25, { c: c.map(v => v * 0.8) }); g.s.box(-0.35, 0, 1.1, 0.35, 1.1, 1.12, { c: [0.15, 0.12, 0.1] }); g.s.clearXf(); }
+      if (best === 'lake' && R() < 0.5) { const q = P(s0 + 12, 70 + R() * 60), at2 = this.at(s0); g.s.setXf(q[0], q[1] + 0.03, q[2], at2.h + 0.4); g.s.quadN([-14, 0, -3], [14, 0, -3], [14, 0, 3], [-14, 0, 3], [0, 1, 0], { c: [0.93, 0.95, 1], lay: L.WHITE }); g.s.clearXf(); }
+      // 除雪車の作業（路肩の外で停車中のロータリー除雪車：黄色い車体・回転灯・雪の吹き上げ）
+      if ((best === 'snowwall' || best === 'snowfield') && R() < 0.12) { const s = s0 + 20, q = this.pos(s, side * 14.2), y = this.terrainH(s, side * 14.2), at2 = this.at(s);
+        g.s.setXf(q[0], y, q[2], at2.h); g.s.box(-1.3, 0.4, -2.5, 1.3, 2.4, 2.2, { c: [0.95, 0.72, 0.1] }); g.s.box(-1.25, 2.4, -0.6, 1.25, 3.4, 1.4, { c: [0.95, 0.72, 0.1] }); g.s.box(-1.2, 2.6, 1.38, 1.2, 3.25, 1.42, { c: [0.3, 0.4, 0.5] });
+        g.s.box(-1.5, 0.2, 2.2, 1.5, 1.6, 3.4, { c: [0.85, 0.2, 0.15] }); for (const x of [-1.2, 1.2]) for (const z of [-1.5, 1.0]) g.s.box(x - 0.2, 0, z - 0.5, x + 0.2, 1, z + 0.5, { c: [0.1, 0.1, 0.1] }); g.s.cbox(0, 3.6, 0.4, 0.35, 0.3, 0.35, { c: [1, 0.55, 0.05], mat: 18 });
+        g.s.cyl(-1.1, 1.6, 2.8, 0.25, 2.6, 6, { c: [0.9, 0.7, 0.1] }); for (let k = 0; k < 6; k++) g.s.cbox(side * (1.2 + k * 0.9), 4.3 + k * 0.55 - k * k * 0.14, 2.8 + k * 0.3, 0.8 + k * 0.25, 0.6 + k * 0.2, 0.8 + k * 0.25, { c: [0.98, 0.99, 1] }); /* 吹き上げた雪（道路と反対側へ） */ g.s.clearXf(); }
     }
   }
   // ---------- 休憩施設（SA・PA・道の駅） ----------
@@ -434,21 +546,21 @@ export class LongWorld {
           g.det.box(x - sz, 3.1 - dy - sz * 1.6, z - sz, x + sz, 3.1 - dy, z + sz, { c: orn, mat: 8 }); if (season === 'summer') g.det.box(x - 0.01, 2.6 - dy, z - 0.04, x + 0.01, 2.9 - dy, z + 0.04, { c: [0.95, 0.95, 0.9] }); }
       }
       if (big) { // SA：2階建て相当の大きな建物。道路側は全面ガラス（フードコート・レストラン・売店）、屋根の大看板
-        g.s.box(x0, 0, z0, x1, 7.5, z1, { c: [0.92, 0.9, 0.86], mat: 3, side: { lay: L.SHOP, tw: 6, th: 7.5 } });
-        g.s.box(x0 - 3, 7.5, z0 - 2, x1 + 1, 8.1, z1 + 2, { c: [0.35, 0.38, 0.42] }); // 庇・屋根
-        g.s.box(x0 - 0.05, 0.3, z0 + 4, x0, 6.5, z1 - 4, { c: [0.55, 0.7, 0.85], mat: 3 });
+        g.s.box(x0, 0, z0, x1, 7.5, z1, LM({ c: [0.92, 0.9, 0.86], mat: 3, side: { lay: L.SHOP, tw: 6, th: 7.5 } }));
+        g.s.box(x0 - 3, 7.5, z0 - 2, x1 + 1, 8.1, z1 + 2, LM({ c: [0.35, 0.38, 0.42] })); // 庇・屋根
+        g.s.box(x0 - 0.05, 0.3, z0 + 4, x0, 6.5, z1 - 4, LM({ c: [0.55, 0.7, 0.85], mat: 3 }));
         for (const [zz, txt] of [[z0 + 25, 'フードコート'], [z0 + 65, 'レストラン'], [z0 + 100, 'ショッピング']]) { const l = this.lbl(txt); g.s.panel(x0 - 0.1, zz - 8, x0 - 0.1, zz + 8, 6.6, 7.4, 0.02, [-1, 0, 0], { c: [1, 1, 1], mat: 16, lay: l }); }
-        g.s.panel(x0 - 1, (z0 + z1) / 2 - 14, x0 - 1, (z0 + z1) / 2 + 14, 8.3, 11.8, 0.05, [-1, 0, 0], { c: [1, 1, 1], mat: 16, lay: sign });
+        g.s.panel(x0 - 1, (z0 + z1) / 2 - 14, x0 - 1, (z0 + z1) / 2 + 14, 8.3, 11.8, 0.05, [-1, 0, 0], LM({ c: [1, 1, 1], mat: 16, lay: sign }));
         // トイレ棟・自販機コーナー・休憩所（ベンチ・パラソル）
         g.s.box(x0 + 4, 0, z1 + 8, x1 - 6, 4.2, z1 + 22, { c: [0.85, 0.82, 0.76], side: { lay: L.SHOP, tw: 5, th: 4.2 } }); g.s.panel(x0 + 3.9, z1 + 10, x0 + 3.9, z1 + 20, 3.2, 4.0, 0.02, [-1, 0, 0], { c: [1, 1, 1], mat: 16, lay: this.lbl('トイレ') }); bld(x0 + 4, z1 + 8, x1 - 6, z1 + 22);
         for (let k = 0; k < 6; k++) g.s.box(x0 - 4, 0, z0 - 4 - k * 1.1, x0 - 3.2, 1.85, z0 - 3.1 - k * 1.1, { c: [[0.85, 0.2, 0.2], [0.2, 0.4, 0.8], [0.95, 0.95, 0.95]][k % 3], mat: 18 });
         for (let k = 0; k < 5; k++) { const z = z0 + 10 + k * 22; g.det.box(64, 0.4, z, 65.6, 0.5, z + 2.4, { c: [0.55, 0.38, 0.25] }); }
       } else if (michi) { // 道の駅：木造の物産館（切妻屋根）・レストラン・観光案内所・のぼり
         const wood = { c: [0.72, 0.52, 0.33], side: { lay: L.SHOP, tw: 5, th: 5 } };
-        g.s.box(x0, 0, z0, x1, 5, z0 + 55, wood); g.s.gable(x0, z0, x1, z0 + 55, 5, 4, { c: [0.3, 0.32, 0.36], lay: L.KAWARA, tw: 2, gc: [0.72, 0.52, 0.33] });
-        g.s.box(x0, 0, z0 + 60, x1, 4.5, z1, wood); g.s.gable(x0, z0 + 60, x1, z1, 4.5, 3.5, { c: [0.45, 0.25, 0.18], lay: L.KAWARA, tw: 2, gc: [0.72, 0.52, 0.33] });
-        if (snowy) { g.s.box(x0 - 0.6, 6.2, z0 - 0.4, x1 + 0.6, 7.2, z0 + 55.4, { c: [0.97, 0.98, 1] }); g.s.box(x0 - 0.6, 5.6, z0 + 59.6, x1 + 0.6, 6.4, z1 + 0.4, { c: [0.97, 0.98, 1] }); }
-        g.s.panel(x0 - 0.1, z0 + 10, x0 - 0.1, z0 + 45, 5.2, 8.6, 0.05, [-1, 0, 0], { c: [1, 1, 1], mat: 16, lay: sign });
+        g.s.box(x0, 0, z0, x1, 5, z0 + 55, LM(wood)); g.s.gable(x0, z0, x1, z0 + 55, 5, 4, LM({ c: [0.3, 0.32, 0.36], lay: L.KAWARA, tw: 2, gc: [0.72, 0.52, 0.33] }));
+        g.s.box(x0, 0, z0 + 60, x1, 4.5, z1, LM(wood)); g.s.gable(x0, z0 + 60, x1, z1, 4.5, 3.5, LM({ c: [0.45, 0.25, 0.18], lay: L.KAWARA, tw: 2, gc: [0.72, 0.52, 0.33] }));
+        if (snowy) { g.s.box(x0 - 0.6, 6.2, z0 - 0.4, x1 + 0.6, 7.2, z0 + 55.4, LM({ c: [0.97, 0.98, 1] })); g.s.box(x0 - 0.6, 5.6, z0 + 59.6, x1 + 0.6, 6.4, z1 + 0.4, LM({ c: [0.97, 0.98, 1] })); }
+        g.s.panel(x0 - 0.1, z0 + 10, x0 - 0.1, z0 + 45, 5.2, 8.6, 0.05, [-1, 0, 0], LM({ c: [1, 1, 1], mat: 16, lay: sign }));
         for (const [zz, txt] of [[z0 + 27, '地元物産館'], [z0 + 78, 'レストラン'], [z1 + 8, '観光案内所']]) g.s.panel(x0 - 0.12, zz - 7, x0 - 0.12, zz + 7, 3.6, 4.4, 0.02, [-1, 0, 0], { c: [1, 1, 1], mat: 16, lay: this.lbl(txt, '#5a3a1a') });
         g.s.box(x0 + 2, 0, z1 + 4, x0 + 14, 3.6, z1 + 14, { c: [0.9, 0.88, 0.82], side: { lay: L.SHOP, tw: 4, th: 3.6 } }); bld(x0 + 2, z1 + 4, x0 + 14, z1 + 14);
         const spec = this.lbl({ spring: '名物 桜もち・山菜', summer: '名物 とうもろこし', autumn: '名物 新そば・きのこ', winter: '名物 おでん・甘酒' }[season], '#8a1a1a');
@@ -456,8 +568,8 @@ export class LongWorld {
         g.det.panel(x0 - 6, z0 + 50, x0 - 6, z0 + 58, 1, 2.4, 0.03, [-1, 0, 0], { c: [1, 1, 1], mat: 16, lay: spec });
         for (let k = 0; k < 4; k++) g.det.box(x0 - 7, 0.4, z0 + 62 + k * 8, x0 - 5.4, 0.5, z0 + 64.4 + k * 8, { c: [0.55, 0.38, 0.25] });
       } else { // PA：トイレと小さな売店・自販機・展望デッキ
-        g.s.box(x0, 0, z0, x1, 4.2, z1, { c: [0.88, 0.85, 0.8], side: { lay: L.SHOP, tw: 5, th: 4.2 } }); g.s.box(x0 - 2, 4.2, z0 - 1, x1 + 1, 4.6, z1 + 1, { c: [0.4, 0.42, 0.45] });
-        g.s.panel(x0 - 2.1, z0 + 15, x0 - 2.1, z0 + 45, 4.7, 7.7, 0.05, [-1, 0, 0], { c: [1, 1, 1], mat: 16, lay: sign });
+        g.s.box(x0, 0, z0, x1, 4.2, z1, LM({ c: [0.88, 0.85, 0.8], side: { lay: L.SHOP, tw: 5, th: 4.2 } })); g.s.box(x0 - 2, 4.2, z0 - 1, x1 + 1, 4.6, z1 + 1, LM({ c: [0.4, 0.42, 0.45] }));
+        g.s.panel(x0 - 2.1, z0 + 15, x0 - 2.1, z0 + 45, 4.7, 7.7, 0.05, [-1, 0, 0], LM({ c: [1, 1, 1], mat: 16, lay: sign }));
         for (const [zz, txt] of [[z0 + 12, 'トイレ'], [z0 + 45, '売店']]) g.s.panel(x0 - 0.1, zz - 6, x0 - 0.1, zz + 6, 3.2, 4.0, 0.02, [-1, 0, 0], { c: [1, 1, 1], mat: 16, lay: this.lbl(txt) });
         for (let k = 0; k < 4; k++) g.s.box(x0 - 3, 0, z0 - 3 - k * 1.1, x0 - 2.2, 1.85, z0 - 2.1 - k * 1.1, { c: [[0.85, 0.2, 0.2], [0.2, 0.4, 0.8], [0.95, 0.95, 0.95]][k % 3], mat: 18 });
         // 展望デッキ（敷地の奥）
@@ -465,7 +577,9 @@ export class LongWorld {
         g.det.panel(95.9, 172, 95.9, 188, 1.3, 2.9, 0.02, [-1, 0, 0], { c: [1, 1, 1], mat: 16, lay: this.lbl('展望スペース') }); bld(96, 160, 108, 200);
         for (let k = 0; k < 3; k++) g.det.box(92, 0.4, 165 + k * 10, 93.6, 0.5, 167.4 + k * 10, { c: [0.55, 0.38, 0.25] });
       }
-      if (snowy) { if (!michi) g.s.box(x0 - 0.5, big ? 8.1 : 4.6, z0 - 0.5, x1 + 0.5, big ? 8.7 : 5.1, z1 + 0.5, { c: [0.97, 0.98, 1] }); for (let k = 0; k < 6; k++) g.s.box(20 + k * 14, 0, -3, 24 + k * 14, 1.2, 0, { c: [0.95, 0.96, 1] }); }
+      if (snowy) { if (!michi) g.s.box(x0 - 0.5, big ? 8.1 : 4.6, z0 - 0.5, x1 + 0.5, big ? 8.7 : 5.1, z1 + 0.5, LM({ c: [0.97, 0.98, 1] })); for (let k = 0; k < 6; k++) g.s.box(20 + k * 14, 0, -3, 24 + k * 14, 1.2, 0, { c: [0.95, 0.96, 1] }); }
+      // 修正104：本線から遠くでも読める高いポール看板（施設名）。遠景モデルにも同じものを置く
+      this.pylon(g.s, sign, big);
       // 入口の案内（本線から見える位置）
       g.s.box(10.2, 0, -150, 10.4, 6, -149.6, { c: [0.6, 0.6, 0.6] }); g.s.panel(9.4, -149.5, 13, -149.5, 3.6, 6, 0.02, [0, 0, -1], { c: [1, 1, 1], mat: 16, lay: this.lbl('入口 ↗', '#0b6b3a') }, [[1, 1], [0, 1], [0, 0], [1, 0]]);
       for (const k of ['d1', 's', 'det', 'd2', 'glow']) g[k].clearXf();
@@ -476,6 +590,32 @@ export class LongWorld {
       if (big || michi) for (let z = 24; z < 196; z += 16) if (R() < 0.6 && trucks.length) mk(20.5, z + 6, 0, trucks[(R() * trucks.length) | 0]);
     });
     f.B = B;
+    this.facFar(f, B, sign);
+  }
+  // 修正104：施設名のポール看板（高さ約20m、本線の手前から読める向き。ローカル座標：lx=道路中心からの横、lz=施設の起点からの前後）
+  pylon(gb, sign, big) { const H = big ? 21 : 17, z = -40, w = big ? 15 : 12;
+    gb.box(15.2, 0, z - 0.4, 16.0, H - 4.6, z + 0.4, LM({ c: [0.62, 0.64, 0.66] })); gb.box(15.0 + 0.6 - w / 2 - 0.4, H - 4.8, z - 0.35, 15.6 + w / 2 + 0.4, H + 0.2, z + 0.35, LM({ c: [0.2, 0.22, 0.24] }));
+    gb.panel(15.6 - w / 2, z - 0.4, 15.6 + w / 2, z - 0.4, H - 4.6, H, 0, [0, 0, -1], LM({ c: [1, 1, 1], mat: 16, lay: sign }), [[1, 1], [0, 1], [0, 0], [1, 0]]); // 本線を来る車から見て左→右に読める向き
+    gb.panel(15.6 - w / 2, z + 0.4, 15.6 + w / 2, z + 0.4, H - 4.6, H, 0, [0, 0, 1], LM({ c: [1, 1, 1], mat: 16, lay: sign })); }
+  // 遠景用の簡易モデルを、そのチャンクの ch.far 用の GB（this.farL）に入れる（チャンクが未読み込み・描画範囲外のとき 2.6km まで描かれる）
+  farGB(s) { const p = this.at(s), ch = this.chunkAt(p.x, p.z); this.farL = this.farL || new Map(); let gb = this.farL.get(ch); if (!gb) this.farL.set(ch, gb = new GB()); return gb; }
+  facFar(f, B, sign) {
+    const at = this.at(f.s), gb = this.farGB(f.s + 100), y = f.y, se = this.season, big = f.type === 'SA', michi = f.type === 'MICHI', [x0, z0, x1, z1] = B, snow = { c: [0.97, 0.98, 1] };
+    gb.setXf(at.x, y, at.z, at.h);
+    if (big) { gb.box(x0, 0, z0, x1, 7.5, z1, LM({ c: [0.92, 0.9, 0.86], side: { lay: L.SHOP, tw: 6, th: 7.5 } })); gb.box(x0 - 3, 7.5, z0 - 2, x1 + 1, 8.1, z1 + 2, LM({ c: [0.35, 0.38, 0.42] })); gb.box(x0 - 0.05, 0.3, z0 + 4, x0, 6.5, z1 - 4, LM({ c: [0.55, 0.7, 0.85] }));
+      gb.panel(x0 - 1, (z0 + z1) / 2 - 14, x0 - 1, (z0 + z1) / 2 + 14, 8.3, 11.8, 0.05, [-1, 0, 0], LM({ c: [1, 1, 1], mat: 16, lay: sign })); gb.box(x0 + 4, 0, z1 + 8, x1 - 6, 4.2, z1 + 22, LM({ c: [0.85, 0.82, 0.76] })); }
+    else if (michi) { const wood = { c: [0.72, 0.52, 0.33], side: { lay: L.SHOP, tw: 5, th: 5 } };
+      gb.box(x0, 0, z0, x1, 5, z0 + 55, LM(wood)); gb.gable(x0, z0, x1, z0 + 55, 5, 4, LM({ c: [0.3, 0.32, 0.36], lay: L.KAWARA, tw: 2, gc: [0.72, 0.52, 0.33] })); gb.box(x0, 0, z0 + 60, x1, 4.5, z1, LM(wood)); gb.gable(x0, z0 + 60, x1, z1, 4.5, 3.5, LM({ c: [0.45, 0.25, 0.18], lay: L.KAWARA, tw: 2, gc: [0.72, 0.52, 0.33] }));
+      gb.panel(x0 - 0.1, z0 + 10, x0 - 0.1, z0 + 45, 5.2, 8.6, 0.05, [-1, 0, 0], LM({ c: [1, 1, 1], mat: 16, lay: sign }));
+      if (this.season === 'winter') { gb.box(x0 - 0.6, 6.2, z0 - 0.4, x1 + 0.6, 7.2, z0 + 55.4, LM(snow)); gb.box(x0 - 0.6, 5.6, z0 + 59.6, x1 + 0.6, 6.4, z1 + 0.4, LM(snow)); } }
+    else { gb.box(x0, 0, z0, x1, 4.2, z1, LM({ c: [0.88, 0.85, 0.8], side: { lay: L.SHOP, tw: 5, th: 4.2 } })); gb.box(x0 - 2, 4.2, z0 - 1, x1 + 1, 4.6, z1 + 1, LM({ c: [0.4, 0.42, 0.45] })); gb.panel(x0 - 2.1, z0 + 15, x0 - 2.1, z0 + 45, 4.7, 7.7, 0.05, [-1, 0, 0], LM({ c: [1, 1, 1], mat: 16, lay: sign })); gb.box(96, 0, 160, 108, 1.2, 200, LM({ c: [0.6, 0.45, 0.3] })); }
+    if (this.season === 'winter' && !michi) gb.box(x0 - 0.5, big ? 8.1 : 4.6, z0 - 0.5, x1 + 0.5, big ? 8.7 : 5.1, z1 + 0.5, LM(snow));
+    this.pylon(gb, sign, big);
+    // 照明塔と外周の木（シルエット）
+    const tc = se === 'spring' ? [1, 0.8, 0.88] : se === 'autumn' ? [0.9, 0.4, 0.15] : se === 'winter' ? [0.9, 0.93, 0.97] : [0.3, 0.52, 0.28];
+    for (let z = 5; z < 225; z += 22) gb.cbox(110.5, 3.6, z, 3.2, 3.4, 3.2, LM({ c: tc }));
+    for (let x = 30; x < 100; x += 26) for (let z = 20; z < 210; z += 90) gb.box(x - 0.15, 0, z - 0.15, x + 0.15, 9, z + 0.15, LM({ c: [0.55, 0.55, 0.58] }));
+    gb.clearXf();
   }
   lbl(txt, bg = '#1c3d6e') { const c = this.lblCache || (this.lblCache = {}); const key = txt + bg; return c[key] || (c[key] = this.newDyn(ctx => { ctx.fillStyle = bg; ctx.fillRect(0, 0, 256, 256); ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.save(); ctx.scale(1, 4); let sz = 40; ctx.font = `800 ${sz}px ${FONT}`; const w = ctx.measureText(txt).width; if (w > 236) { sz *= 236 / w; ctx.font = `800 ${sz}px ${FONT}`; } ctx.fillText(txt, 128, 32); ctx.restore(); })); }
   // 出発地：水瀬東IC（料金所風の門と案内標識）
@@ -505,29 +645,39 @@ export class LongWorld {
       for (let x = -40; x < 40; x += 2.6) { g.d2.flat(x, 30, x + 0.12, 35, 0.02, { c: [1, 1, 1] }); g.d2.flat(x, 60, x + 0.12, 65, 0.02, { c: [1, 1, 1] }); }
       g.s.box(-3, 0, -2, -2.6, 5, -1.6, { c: [0.5, 0.35, 0.25] }); g.s.panel(-8, -1.5, 2, -1.5, 3, 5, 0.02, [0, 0, -1], { c: [1, 1, 1], mat: 16, lay: sign }, [[1, 1], [0, 1], [0, 0], [1, 0]]);
       for (let k = 0; k < 10; k++) this.tree(g.s, season === 'spring' ? 'sakura' : season === 'autumn' ? 'maple' : season === 'winter' ? 'snowpine' : 'birch', -48 + (k % 2) * 96, 0, 12 + k * 8, 1.1, R);
-      if (season === 'spring') { // 城郭公園と天守（石垣の上の三層の天守）
-        g.s.box(-30, 0, 110, 30, 9, 170, { c: [0.62, 0.6, 0.55], lay: L.ROCK, side: { lay: L.ROCK, tw: 4, th: 3 } });
-        let w2 = 22; for (let l = 0; l < 3; l++) { const y0 = 9 + l * 6.5; g.s.box(-w2 / 2, y0, 140 - w2 / 2 + 4, w2 / 2, y0 + 4.5, 140 + w2 / 2 - 4, { c: [0.97, 0.97, 0.95], side: { lay: L.OFFICE2, tw: 4, th: 4.5 } }); g.s.gable(-w2 / 2 - 2, 140 - w2 / 2 + 2, w2 / 2 + 2, 140 + w2 / 2 - 2, y0 + 4.5, 2.4, { c: [0.25, 0.3, 0.35], lay: L.KAWARA, tw: 2, gc: [0.97, 0.97, 0.95] }); w2 *= 0.75; }
-        for (let k = 0; k < 24; k++) this.tree(g.s, 'sakura', -60 + R() * 120, 0, 100 + R() * 90, 1.3, R);
-      } else if (season === 'summer') { // 高原のコテージ群
-        for (let k = 0; k < 6; k++) { const x = -40 + k * 16, z = 120 + (k % 2) * 25; g.s.box(x - 5, 0, z - 4, x + 5, 3.4, z + 4, { c: [0.7, 0.5, 0.32], side: { lay: L.HOUSE, tw: 3, th: 3 } }); g.s.gable(x - 5, z - 4, x + 5, z + 4, 3.4, 2.6, { c: [0.25, 0.4, 0.35], lay: L.METAL, tw: 2, gc: [0.7, 0.5, 0.32] }); g.s.box(x - 5, 0, z - 7, x + 5, 0.4, z - 4, { c: [0.6, 0.45, 0.3] }); }
-      } else if (season === 'autumn') { // 木造の旅館と庭園
-        g.s.box(-35, 0, 110, 35, 7, 150, { c: [0.75, 0.6, 0.42], side: { lay: L.HOUSE_DARK, tw: 3, th: 3.5 } }); g.s.gable(-37, 108, 37, 152, 7, 4, { c: [0.25, 0.27, 0.3], lay: L.KAWARA, tw: 2, gc: [0.75, 0.6, 0.42] });
-        g.s.panel(-8, 107.9, 8, 107.9, 5, 6.8, 0.05, [0, 0, -1], { c: [1, 1, 1], mat: 16, lay: this.lbl('楓見山荘', '#4a2a14') }, [[1, 1], [0, 1], [0, 0], [1, 0]]);
-        for (let k = 0; k < 16; k++) this.tree(g.s, 'maple', -50 + R() * 100, 0, 95 + R() * 70, 1.2, R);
-      } else { // 雪灯温泉郷：雪をかぶった旅館と湯けむり・街灯
-        for (let k = 0; k < 6; k++) { const x = -45 + k * 18; g.s.box(x - 7, 0, 110, x + 7, 6, 125, { c: [0.6, 0.45, 0.32], side: { lay: L.HOUSE_DARK, tw: 3, th: 3 } }); g.s.box(x - 7.5, 6, 109.5, x + 7.5, 7.2, 125.5, { c: [0.97, 0.98, 1] }); g.s.box(x - 1, 2, 109.8, x + 1, 3.4, 110, { c: [1, 0.75, 0.4], mat: 8 }); }
-        for (let k = 0; k < 8; k++) { const x = -42 + k * 12; g.det.cyl(x, 0, 100, 0.08, 3.5, 6, { c: [0.3, 0.25, 0.2] }); g.det.box(x - 0.3, 3.3, 99.7, x + 0.3, 3.9, 100.3, { c: [1, 0.7, 0.35], mat: 8 }); g.glow.flat(x - 6, 94, x + 6, 106, 0.05, { c: [1, 0.75, 0.4], mat: 5, lay: L.GLOW }); }
-      }
+      const n0 = g.s.a.length; this.destLM(g, rng(98)); markLM(g.s, n0); // 修正104：観光地の建物は遠くからも見える目印（mat+100）
       for (const k of ['s', 'det', 'd1', 'd2', 'glow']) g[k].clearXf();
     });
   }
+  // 目的地の観光地の建物（詳細モデルと遠景モデルで共通。遠景では g.det・g.glow も同じ GB に入れる）
+  destLM(g, R) { const season = this.season;
+      if (season === 'spring') { // 城郭公園と天守（石垣の上の三層の天守）
+      g.s.box(-30, 0, 110, 30, 9, 170, { c: [0.62, 0.6, 0.55], lay: L.ROCK, side: { lay: L.ROCK, tw: 4, th: 3 } });
+      let w2 = 22; for (let l = 0; l < 3; l++) { const y0 = 9 + l * 6.5; g.s.box(-w2 / 2, y0, 140 - w2 / 2 + 4, w2 / 2, y0 + 4.5, 140 + w2 / 2 - 4, { c: [0.97, 0.97, 0.95], side: { lay: L.OFFICE2, tw: 4, th: 4.5 } }); g.s.gable(-w2 / 2 - 2, 140 - w2 / 2 + 2, w2 / 2 + 2, 140 + w2 / 2 - 2, y0 + 4.5, 2.4, { c: [0.25, 0.3, 0.35], lay: L.KAWARA, tw: 2, gc: [0.97, 0.97, 0.95] }); w2 *= 0.75; }
+      for (let k = 0; k < 24; k++) this.tree(g.s, 'sakura', -60 + R() * 120, 0, 100 + R() * 90, 1.3, R);
+    } else if (season === 'summer') { // 高原のコテージ群
+      for (let k = 0; k < 6; k++) { const x = -40 + k * 16, z = 120 + (k % 2) * 25; g.s.box(x - 5, 0, z - 4, x + 5, 3.4, z + 4, { c: [0.7, 0.5, 0.32], side: { lay: L.HOUSE, tw: 3, th: 3 } }); g.s.gable(x - 5, z - 4, x + 5, z + 4, 3.4, 2.6, { c: [0.25, 0.4, 0.35], lay: L.METAL, tw: 2, gc: [0.7, 0.5, 0.32] }); g.s.box(x - 5, 0, z - 7, x + 5, 0.4, z - 4, { c: [0.6, 0.45, 0.3] }); }
+    } else if (season === 'autumn') { // 木造の旅館と庭園
+      g.s.box(-35, 0, 110, 35, 7, 150, { c: [0.75, 0.6, 0.42], side: { lay: L.HOUSE_DARK, tw: 3, th: 3.5 } }); g.s.gable(-37, 108, 37, 152, 7, 4, { c: [0.25, 0.27, 0.3], lay: L.KAWARA, tw: 2, gc: [0.75, 0.6, 0.42] });
+      g.s.panel(-8, 107.9, 8, 107.9, 5, 6.8, 0.05, [0, 0, -1], { c: [1, 1, 1], mat: 16, lay: this.lbl('楓見山荘', '#4a2a14') }, [[1, 1], [0, 1], [0, 0], [1, 0]]);
+      for (let k = 0; k < 16; k++) this.tree(g.s, 'maple', -50 + R() * 100, 0, 95 + R() * 70, 1.2, R);
+    } else { // 雪灯温泉郷：雪をかぶった旅館と湯けむり・街灯
+      for (let k = 0; k < 6; k++) { const x = -45 + k * 18; g.s.box(x - 7, 0, 110, x + 7, 6, 125, { c: [0.6, 0.45, 0.32], side: { lay: L.HOUSE_DARK, tw: 3, th: 3 } }); g.s.box(x - 7.5, 6, 109.5, x + 7.5, 7.2, 125.5, { c: [0.97, 0.98, 1] }); g.s.box(x - 1, 2, 109.8, x + 1, 3.4, 110, { c: [1, 0.75, 0.4], mat: 8 }); }
+      for (let k = 0; k < 8; k++) { const x = -42 + k * 12; g.det.cyl(x, 0, 100, 0.08, 3.5, 6, { c: [0.3, 0.25, 0.2] }); g.det.box(x - 0.3, 3.3, 99.7, x + 0.3, 3.9, 100.3, { c: [1, 0.7, 0.35], mat: 8 }); g.glow.flat(x - 6, 94, x + 6, 106, 0.05, { c: [1, 0.75, 0.4], mat: 5, lay: L.GLOW }); }
+    }
+  }
+  destFar() { const d = this.dest, gb = this.farGB(d.s + 40), dummy = new GB(); gb.setXf(d.x, this.endY, d.z, d.h); const n0 = gb.a.length; this.destLM({ s: gb, det: gb, glow: dummy }, rng(98)); markLM(gb, n0); gb.clearXf(); }
   // 本線の案内標識（目的地までの距離・休憩施設の予告）
   signs() {
     const D = this.D;
     for (let km = 50; km < 400; km += 50) { const s = km * 1000 / DIST_SCALE + 30; if (this.fac.some(f => Math.abs(s - f.s) < 520)) continue; const lay = this.greenSign([D.dest, `${400 - km}km`]); this.gantry(s, lay); }
     // 休憩施設の予告（表示15km手前＝実距離470m）
     for (const f of this.fac) { const lay = this.greenSign([f.name, '15km'], { bg: f.type === 'MICHI' ? '#2c6e2c' : '#0b6b3a' }); this.gantry(f.s - 15000 / DIST_SCALE, lay); }
+    // 修正104：施設の予告を増やす（表示10km＝門型、表示5km＝左側の大きなポール標識。施設名と残り距離）
+    for (const f of this.fac) { const bg = f.type === 'MICHI' ? '#2c6e2c' : '#0b6b3a'; this.gantry(f.s - 10000 / DIST_SCALE, this.greenSign([f.name, '10km'], { bg }));
+      const l5 = this.greenSign([f.name, '5km ↗'], { bg }), s5 = f.s - 5000 / DIST_SCALE;
+      this.add(s5, g => { const p = this.pos(s5, 15), at = this.at(s5), a = this.pos(s5, 19.5), b = this.pos(s5, 10.5), n = [-Math.sin(at.h), 0, -Math.cos(at.h)];
+        g.s.box(p[0] - 0.25, p[1] - 1, p[2] - 0.25, p[0] + 0.25, p[1] + 6, p[2] + 0.25, { c: [0.68, 0.7, 0.72] }); g.s.panel(a[0], a[2], b[0], b[2], p[1] + 5.6, p[1] + 9.6, 0.3, n, { c: [1, 1, 1], mat: 16, lay: l5 }); }); }
   }
   gantry(s, lay) {
     this.add(s, g => { const L0 = this.pos(s, 10.8), R0 = this.pos(s, 1.0), at = this.at(s), n = [-Math.sin(at.h), 0, -Math.cos(at.h)];

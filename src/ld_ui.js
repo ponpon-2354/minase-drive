@@ -1,7 +1,7 @@
 // 長距離ドライブモードの画面：設定（季節・人数・同乗者・座席）→ 確認 → 開始、クリア画面
-import { SEASONS } from './ld_world.js?v=0.7.0';
-import { AGE_OPTS, OUTFIT_OPTS, SEAT_OPTS, SEASON_NAMES, CAR_CAPACITY, outfitAllowed, defaultOutfit, seatAllowed } from './passengers.js?v=0.7.0';
-import { hhmm, dur, passengerLabel, outfitName, seatName } from './longdrive.js?v=0.7.0';
+import { SEASONS } from './ld_world.js?v=0.8.0';
+import { AGE_OPTS, OUTFIT_OPTS, SEAT_OPTS, SEASON_NAMES, CAR_CAPACITY, outfitAllowed, defaultOutfit, seatAllowed } from './passengers.js?v=0.8.0';
+import { hhmm, dur, passengerLabel, outfitName, seatName } from './longdrive.js?v=0.8.0';
 
 const SEASON_TEXT = {
   spring: ['桜並木・川沿いの桜・田園・桜の橋・桜のトンネル', '城下町を抜けて、満開の桜ヶ丘城でお花見'],
@@ -137,5 +137,24 @@ export function renderClear($, rec, clears) {
     <tr><th>総経過時間</th><td>${dur(rec.totalMin)}（09:00 → ${hhmm(540 + rec.totalMin)}）</td></tr>
     <tr><th>休憩回数</th><td>${rec.rests}回${rec.restLog && rec.restLog.length ? '<br><span class="small">' + rec.restLog.map(r => `${r.name} ${r.at}〜${r.to}`).join('<br>') + '</span>' : ''}</td></tr>
     <tr><th>同行人数</th><td>${rec.people}人</td></tr></table>
-    <div class="small">この季節のクリア ${best}回目（記録はこの端末に保存されます）</div>`;
+    <div class="small">この季節のクリア ${best}回目（記録はこの端末に保存されます）</div>${ecoHtml(rec)}`;
+  // 修正111：夕方・夜に着いたときはクリア画面も夕焼け／夜の色に
+  const pn = $('ldcBody').closest('.panel'); if (pn) { pn.classList.toggle('tod-evening', rec.tod === 'evening'); pn.classList.toggle('tod-night', rec.tod === 'night'); }
+  ecoStyle();
 }
+// 修正110：エコ運転スコア（点数・ランク・内訳・同乗者のひと言）。古い記録（eco なし）は表示しない
+const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+function ecoHtml(rec) {
+  const e = rec.eco; if (!e || typeof e.score !== 'number') return '';
+  const rows = (e.items || []).map(i => `<tr><th>${esc(i.label)}</th><td>${esc(i.detail)}</td><td class="pts ${i.pts > 0 ? 'p' : i.pts < 0 ? 'm' : ''}">${i.pts > 0 ? '+' : ''}${i.pts}</td></tr>`).join('');
+  const tod = rec.tod === 'evening' ? '🌇 夕焼けの到着' : rec.tod === 'night' ? '🌙 夜の到着' : '☀ 昼の到着';
+  return `<div class="ldeco"><div class="ldeh">エコ運転スコア <b>${e.score}</b>点 <span class="rk rk${esc(e.rank)}">ランク${esc(e.rank)}</span><span class="tod">${tod}${rec.arrive ? '（' + esc(rec.arrive) + '）' : ''}</span></div>
+    <table class="ldt eco">${rows}<tr><th>基本点</th><td></td><td class="pts">90</td></tr></table>
+    ${e.comment ? `<div class="ecoc"><b>${esc(e.comment.who)}</b>「${esc(e.comment.text)}」</div>` : ''}</div>`;
+}
+function ecoStyle() { if (document.getElementById('ldecoCss')) return; const st = document.createElement('style'); st.id = 'ldecoCss';
+  st.textContent = `.ldeco{margin-top:10px;padding:8px 10px;border-radius:6px;background:rgba(255,255,255,.07);text-align:left}.ldeh{font-size:15px;font-weight:700;display:flex;flex-wrap:wrap;gap:8px;align-items:baseline}.ldeh b{font-size:26px;color:#7fe08a}
+  .rk{padding:1px 8px;border-radius:10px;background:#3a5;color:#fff;font-size:13px}.rkS{background:#d4a017}.rkA{background:#3a8f4a}.rkB{background:#3f7fbf}.rkC{background:#b87a2a}.rkD{background:#b8443a}.ldeh .tod{font-size:12px;opacity:.85;margin-left:auto}
+  .ldt.eco td.pts{text-align:right;font-weight:700;width:3.5em}.ldt.eco td.p{color:#7fe08a}.ldt.eco td.m{color:#ff8a6a}.ldt.eco th,.ldt.eco td{font-size:12px;padding:2px 6px}.ecoc{margin-top:6px;font-size:13px}.ecoc b{color:#ffd37a;margin-right:4px;font-size:11px}
+  .panel.tod-evening{background:linear-gradient(180deg,rgba(120,60,70,.94),rgba(40,30,50,.94))}.panel.tod-night{background:linear-gradient(180deg,rgba(14,20,44,.96),rgba(8,10,20,.96))}`;
+  document.head.appendChild(st); }
