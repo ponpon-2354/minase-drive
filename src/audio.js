@@ -13,14 +13,22 @@ export class Sound {
       const chain = (src, type, f, q, g) => { const fl = ctx.createBiquadFilter(); fl.type = type; fl.frequency.value = f; fl.Q.value = q; const gn = ctx.createGain(); gn.gain.value = g; src.connect(fl); fl.connect(gn); gn.connect(master); return { fl, gn }; };
       // エンジン（3気筒：点火周波数 = rpm/60*1.5）
       const eg = ctx.createGain(); eg.gain.value = 0; const ef = ctx.createBiquadFilter(); ef.type = 'lowpass'; ef.frequency.value = 800; ef.Q.value = 2;
-      ef.connect(eg); eg.connect(master);
+      // 3気筒らしい「ブルブル」：クランク1回転ごとの脈動（点火周波数の1/3）で音量を揺らす
+      const am = ctx.createGain(); am.gain.value = 1; this.amLfo = ctx.createOscillator(); this.amLfo.type = 'sine'; this.amDepth = ctx.createGain(); this.amDepth.gain.value = 0.2; this.amLfo.connect(this.amDepth); this.amDepth.connect(am.gain); this.amLfo.start();
+      ef.connect(am); am.connect(eg); eg.connect(master);
+      // 高回転の乾いた唸り（ソフトクリップした倍音）
+      const ws = ctx.createWaveShaper(), cv = new Float32Array(1024); for (let i = 0; i < 1024; i++) { const x = i / 512 - 1; cv[i] = Math.tanh(x * 4) * 0.8; } ws.curve = cv;
+      const gf = ctx.createBiquadFilter(); gf.type = 'bandpass'; gf.frequency.value = 900; gf.Q.value = 1.2; this.growl = ctx.createGain(); this.growl.gain.value = 0;
+      this.growlF = gf;
       this.o1 = ctx.createOscillator(); this.o1.type = 'sawtooth'; this.o2 = ctx.createOscillator(); this.o2.type = 'square'; this.o3 = ctx.createOscillator(); this.o3.type = 'triangle';
       const g1 = ctx.createGain(); g1.gain.value = 0.5; const g2 = ctx.createGain(); g2.gain.value = 0.25; const g3 = ctx.createGain(); g3.gain.value = 0.4;
       this.o1.connect(g1); this.o2.connect(g2); this.o3.connect(g3); g1.connect(ef); g2.connect(ef); g3.connect(ef);
+      g1.connect(ws); ws.connect(gf); gf.connect(this.growl); this.growl.connect(master);
       this.o1.start(); this.o2.start(); this.o3.start();
       const en = chain(noise(), 'bandpass', 300, 1, 0); en.fl.disconnect(); en.fl.connect(ef); this.engNoise = en;
       this.eg = eg; this.ef = ef;
       this.road = chain(noise(), 'lowpass', 380, 0.7, 0);
+      this.roar = chain(noise(), 'lowpass', 140, 0.9, 0); // 高速域の「ゴーッ」（防音材の薄い軽自動車）
       this.wind = chain(noise(), 'bandpass', 1100, 0.6, 0);
       this.rain = chain(noise(), 'highpass', 2500, 0.4, 0);
       this.city = chain(noise(), 'lowpass', 220, 0.5, 0);
@@ -49,22 +57,27 @@ export class Sound {
     g.gain.setValueAtTime(Math.min(0.6, k), t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
     o.connect(g); g.connect(this.master); o.start(t); o.stop(t + 0.32);
   }
-  update(s) { // s: {rpm, thr, kmh, brake, slip, rain, horn, npcNear, cityK, cockpit}
+  update(s) { // s: {rpm, thr, kmh, brake, slip, rain, horn, npcNear, cityK, cockpit, engine}
     if (!this.ok) return;
     const t = this.ctx.currentTime, k = 0.06;
-    const f = s.rpm / 60 * 1.5;
+    const f = Math.max(10, s.rpm) / 60 * 1.5;
     this.o1.frequency.setTargetAtTime(f, t, 0.03); this.o2.frequency.setTargetAtTime(f * 0.5, t, 0.03); this.o3.frequency.setTargetAtTime(f * 2, t, 0.03);
+    this.amLfo.frequency.setTargetAtTime(f / 3, t, 0.03); this.amDepth.gain.setTargetAtTime(0.12 + Math.min(1, s.rpm / 6800) * 0.25, t, 0.1);
     this.engNoise.fl.frequency.setTargetAtTime(f * 3, t, 0.05);
     const ins = s.cockpit ? 0.8 : 1;
     this.ef.frequency.setTargetAtTime((350 + s.rpm * 0.22 + s.thr * 900) * ins, t, 0.05);
-    const eng = s.engine ?? 1; // 運転していない時（メニュー・タイトル）はエンジン音を絞る
-    this.eg.gain.setTargetAtTime((0.09 + s.thr * 0.14 + s.rpm / 6800 * 0.08) * (s.thr < 0.05 && s.kmh > 10 ? 0.65 : 1) * eng, t, eng < 1 ? 0.6 : k);
+    const eng = s.engine ?? 1; // 0：メニュー中・アイドリングストップ中はエンジン音を止める
+    const hi = Math.max(0, (s.rpm - 3800) / 3000); // 高回転ほど3気筒の唸りを強く
+    this.eg.gain.setTargetAtTime((0.09 + s.thr * 0.14 + s.rpm / 6800 * 0.1) * (s.thr < 0.05 && s.kmh > 10 ? 0.65 : 1) * eng, t, eng < 1 ? 0.12 : k);
     this.engNoise.gn.gain.setTargetAtTime((0.05 + s.thr * 0.12) * eng, t, k);
-    const v = s.kmh / 100;
-    this.road.gn.gain.setTargetAtTime(Math.min(0.35, v * 0.28) * (s.rain ? 1.4 : 1), t, k);
+    this.growl.gain.setTargetAtTime(Math.min(0.12, hi * hi * 0.12 * (0.4 + s.thr * 0.6)) * eng, t, 0.08); this.growlF.frequency.setTargetAtTime(600 + s.rpm * 0.12, t, 0.08);
+    // ロードノイズと風切り音：50〜60km/hを境に大きく混ぜる
+    const v = s.kmh / 100, sm = (a, b, x) => { const q = Math.min(1, Math.max(0, (x - a) / (b - a))); return q * q * (3 - 2 * q); }, hv = sm(0.48, 0.9, v);
+    this.road.gn.gain.setTargetAtTime((Math.min(0.2, v * 0.22) + hv * 0.16) * (s.rain ? 1.4 : 1), t, k);
     this.road.fl.frequency.setTargetAtTime(250 + v * 500 + (s.rain ? 600 : 0), t, k);
-    this.wind.gn.gain.setTargetAtTime(Math.min(0.3, v * v * 0.2), t, k);
-    this.rain.gn.gain.setTargetAtTime(s.rain ? (s.cockpit ? 0.14 : 0.09) : 0, t, 0.3);
+    this.roar.gn.gain.setTargetAtTime(hv * 0.32 + Math.max(0, v - 0.9) * 0.2, t, 0.15);
+    this.wind.gn.gain.setTargetAtTime(Math.min(0.36, v * v * 0.08 + sm(0.55, 1.1, v) * 0.24), t, k);
+    this.rain.gn.gain.setTargetAtTime(s.rain ? (s.cockpit ? 0.16 : 0.09) : 0, t, 0.3);
     this.city.gn.gain.setTargetAtTime(0.03 + s.cityK * 0.05, t, 0.5);
     this.npc.gn.gain.setTargetAtTime(Math.min(0.25, s.npcNear * 0.6), t, 0.1);
     this.npcG.gain.setTargetAtTime(Math.min(0.08, s.npcNear * 0.2), t, 0.1);
@@ -73,6 +86,23 @@ export class Sound {
     this.squeal.gn.gain.setTargetAtTime(s.slip ? 0.12 : (s.brake > 0.7 && s.kmh > 5 && s.kmh < 40 ? 0.05 : 0), t, 0.05);
     this.hg.gain.setTargetAtTime(s.horn ? 0.3 : 0, t, 0.01);
     this.ambient(s.amb || null);
+  }
+  // セルモーターの「キュルル」（アイドリングストップからの再始動）
+  starter() {
+    if (!this.ok) return;
+    const ctx = this.ctx, t = ctx.currentTime, o = ctx.createOscillator(), g = ctx.createGain(), lf = ctx.createOscillator(), lg = ctx.createGain(), fl = ctx.createBiquadFilter();
+    o.type = 'sawtooth'; o.frequency.setValueAtTime(150, t); o.frequency.linearRampToValueAtTime(210, t + 0.32); fl.type = 'lowpass'; fl.frequency.value = 900;
+    lf.frequency.value = 28; lg.gain.value = 0.05; lf.connect(lg); lg.connect(g.gain);
+    g.gain.setValueAtTime(0.07, t); g.gain.linearRampToValueAtTime(0.0001, t + 0.38);
+    o.connect(fl); fl.connect(g); g.connect(this.master); o.start(t); lf.start(t); o.stop(t + 0.4); lf.stop(t + 0.4);
+  }
+  // 路面の段差の突き上げ「ゴトッ」
+  bump(k) {
+    if (!this.ok || k < 0.05) return;
+    const ctx = this.ctx, t = ctx.currentTime, o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = 'sine'; o.frequency.setValueAtTime(90, t); o.frequency.exponentialRampToValueAtTime(45, t + 0.12);
+    g.gain.setValueAtTime(Math.min(0.35, k * 0.35), t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.16);
+    o.connect(g); g.connect(this.master); o.start(t); o.stop(t + 0.18);
   }
   // 環境音：地区ごとに 鳥・虫・川・街のざわめき（合成音）
   ambient(a) {

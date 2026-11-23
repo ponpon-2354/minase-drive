@@ -1,7 +1,7 @@
 // v0.3 道路わき・街の小物（標識・カーブミラー・バス停・自販機・ポスト・自転車・看板類）と、道路の細部
-import { L } from './textures.js';
-import { rng } from './math.js';
-import { MODELS as MODELS_REF } from './carmodels.js';
+import { L } from './textures.js?v=0.6.2';
+import { rng } from './math.js?v=0.6.2';
+import { MODELS as MODELS_REF } from './carmodels.js?v=0.6.2';
 
 const BACK = { SP30: 'BACK_RND', SP40: 'BACK_RND', SP50: 'BACK_RND', SP60: 'BACK_RND', NOENTRY: 'BACK_RND', BUSSTOP: 'BACK_RND', STOP: 'BACK_TRI', CURVE: 'BACK_DIA' };
 const WHITE = [0.95, 0.95, 0.93];
@@ -182,7 +182,6 @@ export function installProps(City) {
 
 // ================= 街全体の追加設備（街区生成のあとに呼ぶ） =================
 const DEST = [['水瀬駅', 0, -420], ['市役所', 250, -250], ['みなせ峠', 0, -1450], ['水瀬川', 0, 565], ['工業団地', -1750, 0], ['水瀬IC', 1000, 300], ['田園地帯', -1000, 1300], ['道の駅', -470, -1500], ['県庁方面', 2000, 0], ['西水瀬', -1500, 0]];
-export const TRAM_NAMES = ['西水瀬', '銀座通り', '市役所前', '水瀬駅通り', '本町', '東水瀬'];
 export function txt(ctx, s, x, y, size, col, align = 'center', w = 999) {
   ctx.font = `700 ${size}px 'Hiragino Kaku Gothic ProN','Hiragino Sans','Noto Sans JP','Yu Gothic',sans-serif`;
   const m = ctx.measureText(s).width; ctx.save(); ctx.translate(x, y); if (m > w) ctx.scale(w / m, 1);
@@ -305,27 +304,6 @@ export function roadExtras(city) {
       g.det.cyl(kx + 2.8, 3.0, kz - 2.2, 0.18, 0.3, 8, { c: [1, 0.15, 0.1], mat: 18 }); // 赤色灯
     });
     { const m = MODELS_REF.find(q => q.name === 'クラウン'); if (m && city.query && ![...city.query(kx + 5.5, kz, 3)].some(b => b.kind !== 'x' && kx + 5.5 > b.x0 - 2.5 && kx + 5.5 < b.x1 + 2.5 && kz > b.z0 - 1.2 && kz < b.z1 + 1.2)) { city.addCarBox(kx + 5.5, kz, 0, m); city.add(kx + 5.5, kz, g => { city.bakeCar(g.det, m, { rgb: [0.95, 0.95, 0.95] }, kx + 5.5, kz, 0); g.det.cbox(kx + 5.5, m.H + 0.08, kz - 0.2, 0.9, 0.14, 0.22, { c: [1, 0.1, 0.1], mat: 18 }); }); st.patrolCar = (st.patrolCar || 0) + 1; } } // 交番の前のパトロールカー（静止）
-  }
-  // ---- 路面電車の電停名・安全地帯 ----
-  if (city.tramRoute) {
-    const xs = [...new Set(city.tramStops.map(t => Math.round(city.edgePt(city.edges[t.e], t.s, 0)[0] / 10) * 10))].sort((a, b) => a - b);
-    for (const t of city.tramStops) {
-      const e = city.edges[t.e], p0 = city.edgePt(e, t.s, 0), k = xs.indexOf(Math.round(p0[0] / 10) * 10);
-      t.name = TRAM_NAMES[Math.min(TRAM_NAMES.length - 1, Math.round(k * (TRAM_NAMES.length - 1) / Math.max(1, xs.length - 1)))];
-      const o = e.base + 0.5 * e.lw, name = t.name, nx = t.name;
-      const lay = newDyn((ctx, S) => { ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, S, S); ctx.fillStyle = '#1f6f45'; ctx.fillRect(0, 0, S, 64); txt(ctx, '電停', S / 2, 34, 34, '#fff'); txt(ctx, name, S / 2, 130, 60, '#163', 'center', 230); txt(ctx, 'みなせ市電', S / 2, 210, 26, '#555'); });
-      pois.push({ t: 'tram', x: p0[0], z: p0[2], name: nx });
-      // 安全地帯（軌道のすぐ外側の島式ホーム）
-      const a = city.edgePt(e, t.s - 9, o + 1.35), b = city.edgePt(e, t.s + 9, o + 2.15);
-      city.addBox(a[0], a[2], b[0], b[2], 'w', -50, 0.3);
-      city.add(p0[0], p0[2], g => {
-        g.s.box(Math.min(a[0], b[0]), 0, Math.min(a[2], b[2]), Math.max(a[0], b[0]), 0.25, Math.max(a[2], b[2]), { c: [0.75, 0.75, 0.72], top: { lay: L.TACTILE, tw: 1 } });
-        const c = city.edgePt(e, t.s - 7, o + 1.9), c2 = city.edgePt(e, t.s + 7, o + 1.9);
-        for (const q of [c, c2]) g.det.cyl(q[0], 0.25, q[2], 0.05, 2.4, 4, { c: [0.6, 0.62, 0.62] });
-        g.det.box(Math.min(c[0], c2[0]) - 0.6, 2.65, Math.min(c[2], c2[2]) - 0.6, Math.max(c[0], c2[0]) + 0.6, 2.75, Math.max(c[2], c2[2]) + 0.6, { c: [0.3, 0.45, 0.65] });
-        if (lay != null) { const q = city.edgePt(e, t.s + 6, o + 1.9); city.signPole(g.det, q[0], q[2], [-e.d[0], -e.d[1]], lay, 0.9, 0.9, 1.6, 0); }
-      });
-    }
   }
   // ---- 橋の銘板 ----
   const BN = ['みなせばし', 'ほんまちばし', 'さくらばし', 'ひがしばし', 'かわぞえばし', 'にしばし', 'しんみなせばし'];

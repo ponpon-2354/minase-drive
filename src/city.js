@@ -1,12 +1,12 @@
 // 架空都市「水瀬市」：道路ネットワーク・信号・街区・建物・駐車場・チャンク管理
 // v0.2：約4km四方（x,z = -2000〜2000）。中心市街地（1km四方）＋郊外・工業団地・ロードサイド・河川・田園・山間部
-import { GB, hex } from './geo.js';
-import { L, plateUV, PLATES } from './textures.js';
-import { rng, clamp } from './math.js';
-import { buildHull, pickModel, pickColor, MODELS, plateClass, pickPassenger, pickCommercial, isCommercial } from './carmodels.js';
-import { CURVES, curvePts, inNewDistrict } from './districts.js';
-import { buildWorld } from './world.js';
-import { installProps } from './props.js';
+import { GB, hex } from './geo.js?v=0.6.2';
+import { L, plateUV, PLATES } from './textures.js?v=0.6.2';
+import { rng, clamp } from './math.js?v=0.6.2';
+import { buildHull, pickModel, pickColor, MODELS, plateClass, pickPassenger, pickCommercial, isCommercial, pickFit } from './carmodels.js?v=0.6.2';
+import { CURVES, curvePts, inNewDistrict } from './districts.js?v=0.6.2';
+import { buildWorld } from './world.js?v=0.6.2';
+import { installProps } from './props.js?v=0.6.2';
 
 export const LINES = [-500, -375, -250, -125, 0, 125, 250, 375, 500];
 export const XL = [-2000, -1500, -1000, -500, 0, 500, 1000, 1500, 2000];
@@ -84,14 +84,14 @@ export class City {
     this.nodes = []; this.nmap = new Map(); this.edges = []; this.emap = new Map(); this.lots = []; this.aabbs = []; this.hash = new Map(); this.walls = []; this.whash = new Map();
     this.chunks = []; this.sigHeads = []; this.mm = { blds: [], lots: [], lanes: [], polys: [], water: [], green: [] };
     this.stats = { buildings: 0, houses: 0, parked: 0, lotsAI: 0 };
-    this.surfaces = []; this.tunnels = []; this.tramStops = []; this.loops = []; this.driveways = []; this.dhash = new Map();
+    this.surfaces = []; this.tunnels = []; this.loops = []; this.driveways = []; this.dhash = new Map();
     for (let cz = 0; cz < NCZ; cz++) for (let cx = 0; cx < NCX; cx++) this.chunks.push({ cx, cz, x: CX0 + cx * CH + CH / 2, z: CZ0 + cz * CH + CH / 2, cmds: [], m: null });
     this.global = new GB(); this.globalDecal = new GB();
     this.buildNetwork();
     buildWorld(this, 'pre');   // 山道・地形（道路ジオメトリより先に必要）
     this.buildRoads();
     for (let bz = 0; bz < 8; bz++) for (let bx = 0; bx < 8; bx++) this.genBlock(bx, bz);
-    buildWorld(this, 'post');  // 郊外・河川・鉄道・路面電車など
+    buildWorld(this, 'post');  // 郊外・河川・鉄道など
   }
   // ---------- チャンク ----------
   chunkAt(x, z) {
@@ -176,10 +176,27 @@ export class City {
   groundY(x, z, cy = 0) {
     let y = this.terrainY(x, z);
     const ms = this.mtnSurfY ? this.mtnSurfY(x, z) : null; // 峠道：描画した路面・路肩と同じ高さ
-    if (ms != null) y = ms;
-    else if (this.padLinkD && z < -1400 && this.padLinkD(x, z) < 5) y = this.restPad.y + 0.03; // 道の駅の進入路
+    const onLink = this.padLinkD && z < -1400 && this.padLinkD(x, z) < 5.2 && !(this.mtnRoadAt(x, z)); // 道の駅の進入路（本線の車線上は本線）
+    if (onLink) { const ly = this.padQuadY ? this.padQuadY(x, z) : null; y = ly ?? ms ?? this.padLinkY(x, z); }
+    else if (ms != null) y = ms;
     for (const s of this.surfaces) if (x > s.x0 && x < s.x1 && z > s.z0 && z < s.z1) { const ys = s.y(x, z); if (cy > ys - 1.6 && ys > y) y = ys; }
     return y;
+  }
+  // 修正86：その地点の制限速度（km/h）。道路の車道上なら道路種別の制限値、生活道路は30、農道は40、道路外は null
+  limitAt(x, z) {
+    if (!this.ehash) { const H = this.ehash = new Map(); const put = (px, pz, v) => { const k = Math.floor(px / 40) * 7919 + Math.floor(pz / 40); let a = H.get(k); if (!a) H.set(k, a = new Set()); a.add(v); };
+      for (const e of this.edges) for (let s = 0; s <= e.len; s += 10) { const p = this.edgePt(e, Math.min(s, e.len), 0); put(p[0], p[2], e); }
+      for (const l of this.mm.lanes) if (l.kind === 'lane' || l.kind === 'farm') for (let t = l.a; t <= l.b; t += 10) put(l.axis === 'ns' ? l.c : t, l.axis === 'ns' ? t : l.c, l); }
+    let best = null, bd = 1e9;
+    for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) { const a = this.ehash.get((Math.floor(x / 40) + i) * 7919 + Math.floor(z / 40) + j); if (!a) continue;
+      for (const o of a) {
+        if (o.axis && o.c != null && !o.sp) { const ns = o.axis === 'ns', d = Math.abs((ns ? x : z) - o.c), t = ns ? z : x; if (t >= o.a - 1 && t <= o.b + 1 && d < o.w + 0.5 && d < bd) { bd = d; best = { lim: o.kind === 'farm' ? 40 : 30, kind: o.kind }; } continue; }
+        const e = o; let d;
+        if (e.straight) { const rx = x - e.x0, rz = z - e.z0, s = rx * e.d[0] + rz * e.d[1]; if (s < -2 || s > e.len + 2) continue; d = Math.abs(rx * e.d[1] - rz * e.d[0]); }
+        else { d = 1e9; for (let k = 0; k < e.pts.length - 1; k++) { const a2 = e.pts[k], b2 = e.pts[k + 1], vx = b2[0] - a2[0], vz = b2[1] - a2[1], t = clamp(((x - a2[0]) * vx + (z - a2[1]) * vz) / (vx * vx + vz * vz || 1), 0, 1); d = Math.min(d, Math.hypot(a2[0] + vx * t - x, a2[1] + vz * t - z)); } }
+        if (d < e.sp.hw + 0.5 && d < bd) { bd = d; best = { lim: e.lim, kind: e.sp.kind }; }
+      } }
+    return best;
   }
   district(x, z) { return this.zoneName ? this.zoneName(x, z) : ''; }
   coreDistrict(x, z) {
@@ -497,17 +514,29 @@ export class City {
     g.s.box(x0, 0, z0, x1, 0.2, z1, { c: [0.72, 0.72, 0.7], top: { lay: L.GRASS, tw: 3 } });
     for (let s = 4; s < e.len - 2; s += 6) { const p = this.edgePt(e, s, 0); g.s.cbox(p[0], 0.5, p[2], 1.0, 0.6, 1.0, { c: [0.45, 0.62, 0.35], lay: L.TREE }); }
   }
-  tree(gb, x, z, R) {
-    const s = 0.8 + R() * 0.5;
-    gb.cyl(x, 0, z, 0.15 * s, 2.2 * s, 5, { c: [0.35, 0.27, 0.2] }, false);
-    const c = [0.55 + R() * 0.2, 0.75 + R() * 0.2, 0.5 + R() * 0.1];
-    const o = { c, lay: L.TREE };
-    const y = 2.0 * s, r = 2.0 * s, t = 4.2 * s;
-    const pts = [[r, 0], [0, r], [-r, 0], [0, -r]];
-    for (let k = 0; k < 4; k++) {
-      const a = pts[k], b = pts[(k + 1) % 4];
-      gb.tri([x + a[0], y + t * 0.35, z + a[1]], [x + b[0], y + t * 0.35, z + b[1]], [x, y + t, z], o, [0, 1], [1, 1], [0.5, 0], [x, y + t * 0.4, z]);
-      gb.tri([x + a[0], y + t * 0.35, z + a[1]], [x + b[0], y + t * 0.35, z + b[1]], [x, y, z], o, [0, 0], [1, 0], [0.5, 1], [x, y + t * 0.4, z]);
+  // 修正93-2：樹種（0=けやき型の丸い樹冠、1=いちょう型の円錐、2=さくら型の低く横に広い樹冠）と大きさにばらつき。
+  // 街路樹の樹冠の下端は3m以上（追走カメラ（高さ約2.2m）や運転席の視界を樹冠がふさがない）。夜は暗く見える色味
+  tree(gb, x, z, R, sp = null) {
+    const kind = sp == null ? (R() < 0.6 ? 0 : R() < 0.75 ? 1 : 2) : sp % 3, s = 0.75 + R() * 0.55, dk = 0.78;
+    const th = kind === 0 ? Math.max(3.1, 3.4 * s) : kind === 1 ? Math.max(3.0, 3.0 * s) : Math.max(2.4, 2.3 * s);
+    gb.cyl(x, 0, z, (kind === 2 ? 0.17 : 0.14) * s, th + 0.4, 6, { c: kind === 2 ? [0.32, 0.24, 0.22] : [0.36, 0.28, 0.2] }, false);
+    const c = kind === 1 ? [(0.62 + R() * 0.12) * dk, (0.78 + R() * 0.12) * dk, (0.38 + R() * 0.08) * dk] : kind === 2 ? [(0.6 + R() * 0.1) * dk, (0.8 + R() * 0.1) * dk, (0.5 + R() * 0.08) * dk] : [(0.48 + R() * 0.14) * dk, (0.66 + R() * 0.14) * dk, (0.4 + R() * 0.1) * dk];
+    const o = { c, lay: L.TREE }, N = 6, rot = R() * Math.PI;
+    if (kind === 1) { // 円錐
+      const r = 1.5 * s, h = 5.2 * s, y0 = th, cen = [x, y0 + h * 0.35, z];
+      for (let k = 0; k < N; k++) { const a0 = rot + k / N * Math.PI * 2, a1 = rot + (k + 1) / N * Math.PI * 2, p0 = [x + Math.cos(a0) * r, y0, z + Math.sin(a0) * r], p1 = [x + Math.cos(a1) * r, y0, z + Math.sin(a1) * r];
+        gb.tri(p0, p1, [x, y0 + h, z], o, [0, 1], [1, 1], [0.5, 0], cen); gb.tri(p0, p1, [x, y0 - 0.3, z], o, [0, 0], [1, 0], [0.5, 1], cen); }
+      return;
+    }
+    // 丸い樹冠（緯度2段の回転体）
+    const rx = (kind === 2 ? 2.7 : 2.2) * s, ry = (kind === 2 ? 1.6 : 2.4) * s, cy = th + ry * 0.85, cen = [x, cy, z];
+    const ring = (t, k) => { const ph = (t - 0.5) * Math.PI, rr = Math.cos(ph) * rx * (0.9 + 0.1 * Math.sin(k * 2.3 + rot)), a = rot + k / N * Math.PI * 2; return [x + Math.cos(a) * rr, cy + Math.sin(ph) * ry, z + Math.sin(a) * rr]; };
+    const rows = [0.18, 0.5, 0.82], bot = [x, cy - ry, z], top = [x, cy + ry, z];
+    for (let k = 0; k < N; k++) {
+      const k1 = k + 1;
+      gb.tri(ring(rows[0], k), ring(rows[0], k1), bot, o, [0, 0], [1, 0], [0.5, 1], cen);
+      for (let r = 0; r < rows.length - 1; r++) { const a0 = ring(rows[r], k), a1 = ring(rows[r], k1), b1 = ring(rows[r + 1], k1), b0 = ring(rows[r + 1], k); gb.tri(a0, a1, b1, o, [0, 1], [1, 1], [1, 0], cen); gb.tri(a0, b1, b0, o, [0, 1], [1, 0], [0, 0], cen); }
+      gb.tri(ring(rows[2], k), ring(rows[2], k1), top, o, [0, 1], [1, 1], [0.5, 0], cen);
     }
   }
   // ---------- 街区 ----------
@@ -529,7 +558,7 @@ export class City {
     const t = DMAP[bz][bx], r = this.blockRect(bx, bz), R = rng(bx * 131 + bz * 977 + 5);
     const B = { ...r, bx, bz, R, t };
     const resGround = 'RAF'.includes(t);
-    this.add((r.x0 + r.x1) / 2, (r.z0 + r.z1) / 2, g => g.s.flat(r.x0 - 0.01, r.z0 - 0.01, r.x1 + 0.01, r.z1 + 0.01, 0, { c: resGround ? [0.8, 0.78, 0.7] : [0.85, 0.85, 0.83], lay: resGround ? L.FIELD : L.ROOF, mat: 0 }, resGround ? 6 : 10));
+    this.add((r.x0 + r.x1) / 2, (r.z0 + r.z1) / 2, g => g.s.flat(r.x0 - 0.01, r.z0 - 0.01, r.x1 + 0.01, r.z1 + 0.01, -0.003, { c: resGround ? [0.8, 0.78, 0.7] : [0.85, 0.85, 0.83], lay: resGround ? L.FIELD : L.ROOF, mat: 0 }, resGround ? 6 : 10));
     const sideOf = () => { // 主要道路に面する側
       if (RS.ew[bz + 1].kind === 'art') return 's'; if (RS.ew[bz].kind === 'art') return 'n';
       if (RS.ns[bx].kind === 'art') return 'w'; if (RS.ns[bx + 1].kind === 'art') return 'e'; return 's';
@@ -585,9 +614,9 @@ export class City {
     const floors = R() < 0.82 ? 2 : 1, H = floors * 2.8, wc = PAL_HOUSE[R() * PAL_HOUSE.length | 0], rc = PAL_ROOF[R() * PAL_ROOF.length | 0];
     const vacant = R() < 0.05; if (vacant) this.stats.vacant = (this.stats.vacant || 0) + 1;
     const rr = R(), roofT = rr < 0.14 ? 'flat' : rr < 0.32 ? 'metal' : rr < 0.42 ? 'shed' : 'gable';
-    const car = !vacant && set > 4 && R() < (this.carRate ?? 0.6), carM = car ? pickModel(R) : null, carC = car ? pickColor(carM, R) : null;
+    const carM0 = !vacant && set > 4 && R() < (this.carRate ?? 0.6) ? pickFit(R, 'res', set - 1.0, 2.0) : null, car = !!carM0, carM = carM0, carC = car ? pickColor(carM, R) : null; // 住宅の車庫：乗用車・軽トラ・軽バンだけ、敷地の奥行きに収まる車だけ
     const dp = f.W(f.F * 0.3, w0 - 0.02), dirIn = f.inv, wallSplit = f.F * 0.5;
-    const carP = f.W(f.F * 0.5, set / 2), carYaw = Math.atan2(dirIn[0], dirIn[1]) + (R() < 0.5 ? Math.PI : 0); // 半数はバック駐車
+    const carP = f.W(f.F * 0.5, carM0 ? Math.max(set / 2, carM0.L / 2 + 0.5) : set / 2), carYaw = Math.atan2(dirIn[0], dirIn[1]) + (R() < 0.5 ? Math.PI : 0); // 半数はバック駐車
     const carport = car && R() < 0.35, ac = R() < 0.85, laundry = !vacant && floors === 2 && R() < 0.35, lpg = R() < 0.4, kero = R() < 0.3, bikeN = vacant ? 0 : R() < 0.45 ? 1 + (R() * 2 | 0) : 0;
     const fenceT = R() < 0.6 ? 0 : R() < 0.5 ? 1 : 2; // 0=ブロック塀 1=生垣 2=アルミフェンス
     const rcM = [[0.55, 0.3, 0.25], [0.3, 0.38, 0.5], [0.35, 0.45, 0.35], [0.42, 0.42, 0.44]][R() * 4 | 0];
@@ -635,7 +664,7 @@ export class City {
     const floors = 2 + (R() < 0.4 ? 1 : 0), fh = 2.9, H = floors * fh, c = PAL_WALL[R() * PAL_WALL.length | 0];
     this.addBox(b.x0, b.z0, b.x1, b.z1); this.stats.buildings++; b.h = H; this.mm.blds.push(b);
     const cars = [];
-    for (let k = 0; k < Math.floor((f.F - 2) / 2.6); k++) if (R() < 0.6) { const m = pickModel(R); cars.push([f.W(1.5 + k * 2.6, 2.8), m, pickColor(m, R)]); }
+    for (let k = 0; k < Math.floor((f.F - 2) / 2.6); k++) if (R() < 0.6) { const m = pickFit(R, 'res', 4.7, 2.2); if (m) cars.push([f.W(1.5 + k * 2.6, 0.6 + m.L / 2), m, pickColor(m, R)]); } // アパートの駐車場：乗用車・軽だけ
     const yaw = Math.atan2(f.inv[0], f.inv[1]);
     for (const [p, m] of cars) this.addCarBox(p[0], p[1], yaw, m);
     this.add((b.x0 + b.x1) / 2, (b.z0 + b.z1) / 2, g => {
@@ -655,7 +684,7 @@ export class City {
     const f = this.frame(pr, side);
     const signs = [L.SG_SHOP1, L.SG_SHOP2, L.SG_SHOP3, L.SG_SHOP4, L.SG_SHOP5, L.SG_SHOP6, L.SG_SHOP7, L.SG_RAMEN];
     const closed = R() < 0.3; this.stats.shutters = (this.stats.shutters || 0) + (closed ? 1 : 0);
-    this.building(f, 1, f.F - 1, 1.5, Math.min(f.D - 1, 12), { floors: 1, fh: 2.9, lay: L.HOUSE, tw: 7, th: 5.6, glay: closed ? L.SHUTTER : L.SHOP, fh0: 3.4, col: PAL_HOUSE[R() * 10 | 0], sign: closed ? L.SG_KASHI : signs[R() * signs.length | 0], R });
+    this.building(f, 1, f.F - 1, 1.5, Math.min(f.D - 1, 12), { floors: 1, fh: 2.9, lay: L.HOUSE, tw: 7, th: 5.8, glay: closed ? L.SHUTTER : L.SHOP, fh0: 3.4, col: PAL_HOUSE[R() * 10 | 0], sign: closed ? L.SG_KASHI : signs[R() * signs.length | 0], R });
     if (!closed && R() < 0.5) { const p = f.W(0.7, 0.8); this.add(p[0], p[1], g => this.nobori(g.det, p[0], p[1], Math.atan2(f.inv[0], f.inv[1]))); }
     if (!closed && R() < 0.35) { const p = f.W(f.F - 1.4, 1.0); this.addBox(p[0] - 0.5, p[1] - 0.5, p[0] + 0.5, p[1] + 0.5, 'p'); this.stats.vending = (this.stats.vending || 0) + 1; this.add(p[0], p[1], g => this.vending(g, p[0], p[1], Math.atan2(-f.inv[0], -f.inv[1]), (p[0] * 3 + p[1]) & 3)); }
   }
@@ -698,6 +727,11 @@ export class City {
         const w = Math.min(signW * 0.8, 14), h = w / 4;
         g.s.panel(sc[0] - tng[0] * w / 2, sc[1] - tng[1] * w / 2, sc[0] + tng[0] * w / 2, sc[1] + tng[1] * w / 2, H + 1, H + 1 + h, -1.5, n, { c: [1, 1, 1], mat: 16, lay: o.roofSign });
       }
+      // 修正93-3：1階がガラス面でない長い建物には、通りに面した出入口（扉・庇・照明）を付ける。外壁の色に合わせた帯で階の区切りを見せる
+      if (o.glay == null && (u1 - u0) > 12 && H > 5) { const dW = Math.min(3.2, (u1 - u0) * 0.2), dc = f.W((u0 + u1) / 2, w0 - 0.03), dt = tng;
+        g.s.quadN([dc[0] - dt[0] * dW / 2, 0, dc[1] - dt[1] * dW / 2], [dc[0] + dt[0] * dW / 2, 0, dc[1] + dt[1] * dW / 2], [dc[0] + dt[0] * dW / 2, 2.6, dc[1] + dt[1] * dW / 2], [dc[0] - dt[0] * dW / 2, 2.6, dc[1] - dt[1] * dW / 2], n, { c: [0.3, 0.36, 0.42], mat: 3, lay: L.SHOP });
+        const ca = f.W((u0 + u1) / 2 - dW / 2 - 0.4, w0), cb = f.W((u0 + u1) / 2 + dW / 2 + 0.4, w0 - 1.4); g.s.box(Math.min(ca[0], cb[0]), 2.8, Math.min(ca[1], cb[1]), Math.max(ca[0], cb[0]), 3.0, Math.max(ca[1], cb[1]), { c: [0.4, 0.42, 0.45] });
+        if (o.floors > 1) { const cc = (o.col || [0.8, 0.8, 0.8]).map(v => v * 0.82); g.s.box(b.x0 - 0.05, fh0 + o.fh - 0.15, b.z0 - 0.05, b.x1 + 0.05, fh0 + o.fh + 0.05, b.z1 + 0.05, { c: cc }); } }
       if (o.awning) { // 庇
         const a = f.W(u0, w0), c2 = f.W(u1, w0 - 1.6);
         g.s.box(Math.min(a[0], c2[0]), fh0 - 0.1, Math.min(a[1], c2[1]), Math.max(a[0], c2[0]), fh0 + 0.1, Math.max(a[1], c2[1]), { c: o.awning });
@@ -745,9 +779,9 @@ export class City {
     // 静的駐車
     const baked = [];
     // 静的駐車：日本の駐車場らしく 65〜75% は後ろ向き（バック駐車）
-    // 用途別の車種：工業・物流は商用車7割以上、店舗・駅・公共は乗用車のみ。店舗の車は閉店後に段階的に消える
-    const lk = L0.kind, ind = lk === 'ind', shopLot = lk === 'big' || lk === 'shop' || lk === 'conv';
-    for (const s of slots) if (R() < (opt.fill ?? 0.35)) { s.occ = 'static'; const m = ind ? (R() < 0.75 ? pickCommercial(R) : pickPassenger(R)) : pickPassenger(R), yy = R() < 0.7 ? s.yaw + Math.PI : s.yaw, nb = shopLot && !(lk === 'conv' && R() < 0.3) ? (R() * 3 | 0) : null; if (ind && m.L > 6.5) { s.occ = null; continue; } baked.push([s, m, pickColor(m, R), yy, nb]); this.addCarBox(s.x, s.z, yy, m, nb); this.stats.parkCom = (this.stats.parkCom || 0) + (isCommercial(m) ? 1 : 0); this.stats.parkPass = (this.stats.parkPass || 0) + (isCommercial(m) ? 0 : 1); this.stats.backIn = (this.stats.backIn || 0) + (yy !== s.yaw ? 1 : 0); }
+    // 用途別の車種：店舗・駅・公共は乗用車のみ、工場の従業員駐車場は乗用車と軽。いずれも枠（2.6m×5m）に収まる車だけ。店舗の車は閉店後に段階的に消える
+    const lk = L0.kind, shopLot = lk === 'big' || lk === 'shop' || lk === 'conv';
+    for (const s of slots) if (R() < (opt.fill ?? 0.35)) { s.occ = 'static'; const m = pickFit(R, lk === 'staff' ? 'res' : 'pass', 4.95, 2.3), yy = R() < 0.7 ? s.yaw + Math.PI : s.yaw, nb = shopLot && !(lk === 'conv' && R() < 0.3) ? (R() * 3 | 0) : null; if (!m) { s.occ = null; continue; } baked.push([s, m, pickColor(m, R), yy, nb]); this.addCarBox(s.x, s.z, yy, m, nb); this.stats.parkCom = (this.stats.parkCom || 0) + (isCommercial(m) ? 1 : 0); this.stats.parkPass = (this.stats.parkPass || 0) + (isCommercial(m) ? 0 : 1); this.stats.backIn = (this.stats.backIn || 0) + (yy !== s.yaw ? 1 : 0); }
     this.stats.parked += baked.length;
     this.mm.lots.push(lr);
     this.add((lr.x0 + lr.x1) / 2, (lr.z0 + lr.z1) / 2, g => {
@@ -782,7 +816,7 @@ export class City {
     this.addDriveway(this.frect(f, f.F / 2 - 3.5, f.F / 2 + 3.5, -4.3, 0.2));
     const cars = [], yaw = Math.atan2(f.inv[0], f.inv[1]);
     const n = Math.floor((f.F - 1) / 2.6);
-    for (let k = 0; k < n; k++) if (R() < fill) { const m = pickPassenger(R); const p = f.W(1.8 + k * 2.6, Math.min(f.D, 18) - 3), yy = R() < 0.8 ? yaw + Math.PI : yaw; cars.push([p, m, pickColor(m, R), yy]); this.addCarBox(p[0], p[1], yy, m); }
+    for (let k = 0; k < n; k++) if (R() < fill) { const m = pickFit(R, 'res', 4.95, 2.3); if (!m) continue; const p = f.W(1.8 + k * 2.6, Math.min(f.D, 18) - 3), yy = R() < 0.8 ? yaw + Math.PI : yaw; cars.push([p, m, pickColor(m, R), yy]); this.addCarBox(p[0], p[1], yy, m); }
     this.stats.parked += cars.length; this.mm.lots.push(lr);
     this.add((lr.x0 + lr.x1) / 2, (lr.z0 + lr.z1) / 2, g => {
       g.d1.flat(lr.x0, lr.z0, lr.x1, lr.z1, 0, { c: [0.85, 0.85, 0.85], mat: 7, lay: L.ASPHALT }, 8);
@@ -805,9 +839,11 @@ export class City {
   }
   greenStrip(pr) { // 植栽帯（芝・低木・高木）。広いところは木を植えて緑地らしくする
     const w = pr.x1 - pr.x0, d = pr.z1 - pr.z0, R = rng((pr.x0 * 13 + pr.z0 * 7) | 0), trees = [];
-    if (w > 5 && d > 5) for (let x = pr.x0 + 3; x < pr.x1 - 2; x += 7) for (let z = pr.z0 + 3; z < pr.z1 - 2; z += 7) if (R() < 0.55) trees.push([x + (R() - 0.5) * 2, z + (R() - 0.5) * 2, R() < 0.4]);
+    // 木は道路（曲線道路は歩道の外側＋1.5m、生活道路は端から1.5m）にかからない位置だけに植える
+    const clear = (x, z) => !this.corridors.some(c => { for (let i = 0; i < c.pts.length - 1; i++) { const a = c.pts[i], b = c.pts[i + 1], vx = b[0] - a[0], vz = b[1] - a[1], t = Math.max(0, Math.min(1, ((x - a[0]) * vx + (z - a[1]) * vz) / (vx * vx + vz * vz || 1))); if (Math.hypot(a[0] + vx * t - x, a[1] + vz * t - z) < (c.lane ? 4 : c.w + 1.5)) return true; } return false; });
+    if (w > 5 && d > 5) for (let x = pr.x0 + 3; x < pr.x1 - 2; x += 7) for (let z = pr.z0 + 3; z < pr.z1 - 2; z += 7) if (R() < 0.55) { const tx = x + (R() - 0.5) * 2, tz = z + (R() - 0.5) * 2, sh = R() < 0.4; if (clear(tx, tz)) trees.push([tx, tz, sh]); }
     for (const [x, z, sh] of trees) if (!sh) this.addBox(x - 0.3, z - 0.3, x + 0.3, z + 0.3, 'p');
-    this.add((pr.x0 + pr.x1) / 2, (pr.z0 + pr.z1) / 2, g => { g.s.flat(pr.x0, pr.z0, pr.x1, pr.z1, 0.01, { c: [0.6, 0.72, 0.45], lay: L.GRASS }, 6);
+    this.add((pr.x0 + pr.x1) / 2, (pr.z0 + pr.z1) / 2, g => { g.s.flat(pr.x0, pr.z0, pr.x1, pr.z1, -0.003, { c: [0.6, 0.72, 0.45], lay: L.GRASS }, 6); // 路面（y=0）より下に敷く：道路に重なっても草が上に出ない
       for (const [x, z, sh] of trees) if (sh) g.det.cbox(x, 0.45, z, 1.6, 0.9, 1.6, { c: [0.35, 0.55, 0.3], lay: L.TREE }); else this.tree(g.det, x, z, rng((x * 31 + z) | 0)); });
   }
   // 児童遊園（小さな公園：すべり台・ブランコ・ベンチ・植栽）
@@ -839,7 +875,7 @@ export class City {
   // 集会所（地区の小さな公共施設：掲示板と旗竿）
   hall(pr, side, R) {
     const f = this.frame(pr, side);
-    const b = this.building(f, 1, f.F - 1, 3, Math.min(f.D - 1, 12), { floors: 1, fh: 3.4, fh0: 0, lay: L.HOUSE, tw: 7, th: 5.6, col: [0.88, 0.86, 0.8], roof: 'gable', rise: 1.6, R, roofItems: false });
+    const b = this.building(f, 1, f.F - 1, 3, Math.min(f.D - 1, 12), { floors: 1, fh: 3.4, fh0: 0, lay: L.HOUSE, tw: 7, th: 6.8, col: [0.88, 0.86, 0.8], roof: 'gable', rise: 1.6, R, roofItems: false });
     if (!b) return;
     this.stats.halls = (this.stats.halls || 0) + 1;
     const p = f.W(1.2, 1.5), q = f.W(f.F - 1.5, 1.2);
@@ -903,6 +939,7 @@ export class City {
     const c = Math.abs(Math.cos(yaw)) > 0.5, hl = m.L / 2, hw = m.W / 2;
     const b = this.addBox(x - (c ? hw : hl), z - (c ? hl : hw), x + (c ? hw : hl), z + (c ? hl : hw), 'c');
     if (nb != null) b.nb = nb;
+    (this.parkedLog || (this.parkedLog = [])).push({ x, z, yaw, m }); // 修正84/85の点検用
   }
   // 店舗の駐車車両が見えている時刻か（段階ごとに 21:00/21:40/22:20 に帰り、7:30/8:30/9:30 に来る）
   shopCarsOn(nb, hour) { return hour >= 7.5 + nb && hour < 21 + nb * 0.67; }
@@ -983,7 +1020,7 @@ export class City {
   genStation(B) {
     const R = B.R, f = this.frame(B, 's');
     // 高架駅舎（1階コンコース）
-    this.building(f, 8, f.F - 8, 34, 52, { floors: 1, fh: 8.4, fh0: 4.2, glay: L.SHOP, gcol: [0.85, 0.92, 1], lay: L.OFFICE2, tw: 16, th: 6.2, col: [0.86, 0.86, 0.84], R, roofItems: false });
+    this.building(f, 8, f.F - 8, 34, 52, { floors: 1, fh: 8.4, fh0: 4.2, glay: L.SHOP, gcol: [0.85, 0.92, 1], lay: L.OFFICE2, tw: 16, th: 4.2, col: [0.86, 0.86, 0.84], R, roofItems: false });
     // v0.5 駅舎を「駅」と分かる造りに：屋上の大きな駅名看板（夜も光る）、ガラスの正面、出入口の大屋根と柱、改札口、駅前広場の舗装・照明・ベンチ、
     // タクシー／バス乗り場の路面表示、ホームへの跨線橋
     { const sA = f.W(f.F / 2 - 14, 34), sB = f.W(f.F / 2 + 14, 34), n = [-f.inv[0], 0, -f.inv[1]], H = 12.6;

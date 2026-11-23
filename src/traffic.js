@@ -1,8 +1,8 @@
 // NPC交通AI：道路ネットワーク（直線・曲線・高低差）追従、IDM車間制御、信号/一時停止、右折待ち、車線変更、
-// 駐車場の入出庫、路面電車（電停・折り返し）、駅前ロータリーの周回車両
-import { clamp, angDiff, bez, M4 } from './math.js';
-import { pickModel, pickColor, plateClass, MODELS } from './carmodels.js';
-import { PLATES } from './textures.js';
+// 駐車場の入出庫、駅前ロータリーの周回車両
+import { clamp, angDiff, bez, M4 } from './math.js?v=0.6.2';
+import { pickModel, pickColor, plateClass, MODELS, isCommercial } from './carmodels.js?v=0.6.2';
+import { PLATES } from './textures.js?v=0.6.2';
 
 // 運転傾向：速度超過では表現せず、加速度・車間・発進の機敏さで差をつける（目標速度の上限は制限速度）
 const STYLES = [
@@ -20,7 +20,6 @@ export const ZONE_TARGET = { center: 32, res: 19, sub: 12, farm: 8, mtn: 3, gak:
 // 自転車・原付（道路の左端を走る。駐車場には入らない）
 export const BIKE_M = { id: -2, name: '自転車', cat: 'bike', L: 1.8, W: 0.6, H: 1.7, acc: 0.7, vmax: 5.2, colors: [{ rgb: [0.85, 0.85, 0.85] }, { rgb: [0.2, 0.3, 0.6] }, { rgb: [0.7, 0.15, 0.2] }, { rgb: [0.15, 0.15, 0.15] }], cw: [3, 2, 2, 2] };
 export const MOTO_M = { id: -3, name: '原付スクーター', cat: 'moto', L: 1.9, W: 0.7, H: 1.6, acc: 1.6, vmax: 8.3, plate: 'k', colors: [{ rgb: [0.85, 0.1, 0.1] }, { rgb: [0.95, 0.95, 0.95] }, { rgb: [0.15, 0.15, 0.18] }, { rgb: [0.2, 0.45, 0.8] }], cw: [2, 3, 3, 2] };
-export const TRAM_M = { id: -1, name: '路面電車', cat: 'tram', L: 18.4, W: 2.4, acc: 0.9, vmax: 11, colors: [] };
 
 export class Traffic {
   constructor(city, R) {
@@ -31,15 +30,9 @@ export class Traffic {
   timeFactor(h) {
     if (h < 5) return 0.3; if (h < 7) return 0.6; if (h < 9) return 1.0; if (h < 16) return 0.75; if (h < 19) return 1.0; if (h < 22) return 0.6; return 0.4;
   }
-  // ---- 路面電車・ロータリー（常駐） ----
+  // ---- 駅前ロータリー（常駐） ----
   initSpecial() {
-    const city = this.city, tr = city.tramRoute;
-    if (tr) for (const [route, idx] of [['east', 1], ['east', 5], ['west', 3], ['west', 0]]) { // 4編成
-      const e = tr[route][idx];
-      const c = this.mk(TRAM_M, { rgb: [1, 1, 1] }, e, 0, e.len * 0.3, STYLES[1]);
-      c.tram = true; c.persist = true; c.route = route; c.ri = idx; c.served = null; this.plan(c);
-      this.cars.push(c);
-    }
+    const city = this.city;
     for (const lp of city.loops) lp.cars.forEach((d, i) => {
       const n = lp.pts.length, k = Math.floor(i * n / lp.cars.length), p = lp.pts[k];
       const c = { id: this.nextId++, m: d.m, tint: d.rgb, x: p[0], z: p[1], y: 0, yaw: 0, v: 0, st: 'loop', loop: lp, li: (k + 1) % n, persist: true, stuck: 0, ghost: 0, hitT: 0, wink: 0, brake: false, dwell: 0, drv: { f: 1, T: 1.4, a: 1.5, b: 3 } };
@@ -68,13 +61,6 @@ export class Traffic {
     const city = this.city, e = city.edges[c.e], node = city.nodes[e.to];
     if (c.parkPlan && c.parkPlan.slot.occ === c) c.parkPlan.slot.occ = null;
     c.conn = null; c.committed = false; c.stopDone = false; c.stopT = 0; c.parkPlan = null;
-    if (c.tram) {
-      const list = city.tramRoute[c.route];
-      c.ri = list.indexOf(e);
-      const nx = list[c.ri + 1];
-      c.next = nx ? { e: nx.id, k: 0, turn: 0 } : null;
-      return;
-    }
     let opts = node.out.map(i => city.edges[i]).filter(o => o.id !== e.rev && o.id !== avoid);
     if (!opts.length) opts = e.rev != null ? [city.edges[e.rev]] : city.nodes[e.to].out.map(i => city.edges[i]);
     const turnOf = o => { const cr = e.dEnd[0] * o.d[1] - e.dEnd[1] * o.d[0]; return Math.abs(cr) < 0.3 ? 0 : cr > 0 ? 1 : -1; };
@@ -88,7 +74,9 @@ export class Traffic {
     if (!avoid && e.lots.length && c.m.cat !== 'bike' && c.m.cat !== 'moto' && c.s < 10) {
       const lot = e.lots[this.R() * e.lots.length | 0];
       // 荷捌き場（工業団地）は中・大型トラックだけ、普通の駐車場は乗用車・軽トラなど
-      const okT = lot.truck ? (c.m.cat === 'trk' && c.m.L > 5.5 && c.m.L < 12.5 && !c.m.semi) : c.m.cat !== 'trk';
+      // 修正84：用途・営業時間・枠の寸法を照合（店舗は営業時間内だけ、乗用車だけ、2.6m×5mに収まる車だけ）
+      const h = this.hour ?? 12, k = lot.kind, open = k === 'conv' ? true : k === 'staff' ? h >= 6 && h < 21 : k === 'dock' ? h >= 5 && h < 23 : h >= 8 && h < 21;
+      const okT = !open ? false : lot.truck ? (c.m.cat === 'trk' && c.m.L > 5.5 && c.m.L < 12.5 && !c.m.semi) : (!isCommercial(c.m) || (k === 'staff' && c.m.plate === 'k')) && c.m.L <= 4.95 && c.m.W <= 2.3;
       const free = okT && this.R() < (lot.truck ? 0.65 : 0.22) ? lot.slots.filter(s => !s.occ) : [];
       if (free.length && lot.sE - c.s > 25) { const sl = free[this.R() * free.length | 0]; sl.occ = c; c.parkPlan = { lot, slot: sl }; }
     }
@@ -150,7 +138,7 @@ export class Traffic {
       const d = Math.hypot(p[0] - px, p[1] - pz);
       if (d < 45 || d > 300) continue;
       if (d < (this.drawDist || 380) && M4.sphereIn(planes, p[0], y + 1, p[1], 4)) continue; // 視界内には出現させない
-      if (this.cars.some(o => (o.x - p[0]) ** 2 + (o.z - p[1]) ** 2 < (o.tram ? 400 : 144))) continue;
+      if (this.cars.some(o => (o.x - p[0]) ** 2 + (o.z - p[1]) ** 2 < 144)) continue;
       const kd = e.sp.kind, two = R(), small = ['minor', 'out', 'ring', 'shop', 'gak', 'nt', 'ntc', 'kaido'].includes(kd) && this.zone !== 'mtn';
       // 二輪：住宅地・学園地区で多く（登下校の時間帯はさらに増える）。夜は商用車（配送・物流）の比率が上がる
       const hr = this.hour ?? 12, school = (hr > 7 && hr < 9.5) || (hr > 15.5 && hr < 18.5), night = hr >= 22 || hr < 5;
@@ -226,8 +214,7 @@ export class Traffic {
       if (c.st === 'wp') { this.updWp(c, dt); continue; }
       if (c.st === 'join') { this.updJoin(c, dt, player); continue; }
       if (c.st === 'loop') { this.updLoop(c, dt); continue; }
-      if (c.st === 'dwell') { this.updDwell(c, dt); continue; }
-      this.updDrive(c, dt, T, near || c.tram, env, player);
+      this.updDrive(c, dt, T, near, env, player);
     }
     this.stats.parkedNow = parked;
   }
@@ -270,7 +257,7 @@ export class Traffic {
     const a = this.byEdge.get(e.id); if (!a) return true;
     for (const o of a) {
       if (o === self || o.proxy === self || o.k !== k) continue;
-      const half = o.tram ? 10 : 0, vs = self.v, vo = o.v || 0;
+      const half = 0, vs = self.v, vo = o.v || 0;
       if (o.s <= s && s - o.s < 9 + half + Math.max(0, vo - vs) * 2.5) return false;
       if (o.s > s && o.s - s < 11 + half + Math.max(0, vs - vo) * 2) return false;
     }
@@ -313,11 +300,11 @@ export class Traffic {
       if (e.vc) for (const ah of [0, 10, 22, 36, 52]) { const vc = city.vcAt(e, c.s + ah) * (1 - 0.18 * this.wet) * clamp(6.5 / Math.max(5, m.L), 0.7, 1); v0 = Math.min(v0, Math.sqrt(vc * vc + 2 * 2.2 * ah)); }
       // 車線：右左折・駐車の準備＞追い越し中＞原則左車線
       if (c.ovT > 0) c.ovT -= dt;
-      let want = c.tram ? 0 : c.parkPlan ? e.lanes - 1 : c.next.turn > 0 ? 0 : c.next.turn < 0 ? e.lanes - 1 : c.ovT > 0 ? c.k : e.lanes - 1;
+      let want = c.parkPlan ? e.lanes - 1 : c.next.turn > 0 ? 0 : c.next.turn < 0 ? e.lanes - 1 : c.ovT > 0 ? c.k : e.lanes - 1;
       // 片側3車線：交差点の手前70mでは中央寄りの車線を右折待ち用に空ける（直進・左折は外側2車線）
       if (e.lanes >= 3 && c.next && c.next.turn <= 0 && e.len - c.s < 70 && want === 0) want = 1;
       if (c.drv.fast && e.lanes > 1 && c.next && c.next.turn === 0 && e.len - c.s > 70) { const sn = this.sense(c, 40); if (sn.gap < 35 && sn.vl < v0 * 0.9 && c.k > 0) { want = c.k - 1; c.ovT = 6; } }
-      if (!c.tram && e.lanes > 1 && c.next.turn === 0 && !c.parkPlan && c.k > 0 && near && c.s < e.len - 70) {
+      if (e.lanes > 1 && c.next.turn === 0 && !c.parkPlan && c.k > 0 && near && c.s < e.len - 70) {
         const sn = this.sense(c, 30);
         if (sn.gap < 25 && sn.vl < v0 * 0.85 && sn.vl < c.v + 0.5 && !(e.lanes >= 3 && c.k - 1 === 0 && e.len - c.s < 90)) { want = c.k - 1; c.ovT = 8; }
       }
@@ -327,22 +314,11 @@ export class Traffic {
       const lk = clamp(5.5 / Math.max(5, m.L), 0.5, 1); // 長い車ほど交差点・カーブで遅く
       if (c.next && c.next.turn !== 0) v0 = Math.min(v0, Math.sqrt(((c.next.turn > 0 ? 4.2 : 5.0) * lk) ** 2 + 2 * 1.2 * Math.max(0, toEnd)));
       // 交差点の先に自車1台分の空きがなければ停止線で待つ（交差点内で固まるのを防ぐ）
-      if (c.next && !c.tram && toEnd < 12 && !c.boxOK) {
+      if (c.next && toEnd < 12 && !c.boxOK) {
         const e2 = city.edges[c.next.e], room = m.L + 3; let occ = false;
         for (const o of this.byEdge.get(e2.id) || []) if (o.k === c.next.k && o.s < room && o !== c) { occ = true; break; }
         if (!occ) for (const o of this.cars) if (o !== c && o.st === 'inter' && o.next && o.next.e === e2.id && o.next.k === c.next.k && o.v < 1) { occ = true; break; }
         if (occ) { apply(Math.max(0, toEnd - 0.6), c.v, 0.4); waiting = true; } else if (toEnd < 2) c.boxOK = true;
-      }
-      // 路面電車：電停と終点
-      if (c.tram) {
-        for (const st of city.tramStops) if (st.e === e.id && st.s > c.s - 0.5 && c.served !== st) {
-          const g = st.s - c.s; apply(Math.max(0, g), c.v, 0.1); waiting = true;
-          if (g < 0.6 && c.v < 0.2) { c.served = st; c.st = 'dwell'; c.dwell = 9 + this.R() * 5; c.v = 0; return; }
-        }
-        if (!c.next) {
-          const g = e.len - 14 - c.s; apply(Math.max(0, g), c.v, 0.1); waiting = true;
-          if (g < 0.6 && c.v < 0.2) { c.st = 'dwell'; c.dwell = 12; c.terminal = true; c.v = 0; return; }
-        }
       }
       if (c.parkPlan) {
         const pp = c.parkPlan, toLot = pp.lot.sE - 7 - c.s;
@@ -389,7 +365,7 @@ export class Traffic {
     c.brake = acc < -0.6 || c.v < 0.2;
     c.v = Math.max(0, c.v + acc * dt);
     // 立ち往生：30秒で経路を再計画（次の交差点で別方向へ）
-    if (c.v < 0.1) { c.stuck += dt; if (c.stuck > 30 && !c.replanned && c.st === 'lane' && !c.tram && c.next) { const old = c.next.e; this.plan(c, old); c.replanned = true; } } else if (c.v > 0.5) { c.stuck = 0; c.replanned = false; }
+    if (c.v < 0.1) { c.stuck += dt; if (c.stuck > 30 && !c.replanned && c.st === 'lane' && c.next) { const old = c.next.e; this.plan(c, old); c.replanned = true; } } else if (c.v > 0.5) { c.stuck = 0; c.replanned = false; }
     // 発進の遅れ（慎重な人ほどゆっくり）
     if (c.v < 0.05 && acc > 0) { c.startT = (c.startT || 0) + dt; if (c.startT < c.drv.react) acc = 0; } else if (c.v > 0.5) c.startT = 0;
     let px, pz, hy, entered = false;
@@ -444,18 +420,6 @@ export class Traffic {
     c.wink = c.parkPlan ? (c.parkPlan.lot.sE - c.s < 30 ? -1 : 0) : c.next && (c.st === 'inter' || toEnd2 < 35) ? c.next.turn : 0;
     if (Math.abs(c.lat) > 0.3 && c.st === 'lane') c.wink = c.lat > 0 ? 1 : -1;
   }
-  // 路面電車の停車・折り返し
-  updDwell(c, dt) {
-    c.v = 0; c.brake = true; c.dwell -= dt;
-    if (c.dwell > 0) return;
-    if (!c.terminal) { c.st = 'lane'; return; }
-    // 渡り線で反対側の線路へ（両運転台のため向きだけ反転）
-    const city = this.city, other = c.route === 'east' ? 'west' : 'east', e2 = city.tramRoute[other][0];
-    const s2 = clamp((c.x - e2.x0) * e2.d[0] + (c.z - e2.z0) * e2.d[1], 0, e2.len), a = city.lanePos(e2, 0, s2 + 14), b = city.lanePos(e2, 0, s2 + 30);
-    c.yaw += Math.PI; c.terminal = false;
-    c.wps = [{ x: a[0], z: a[1] }, { x: b[0], z: b[1], last: true }]; c.wi = 0; c.st = 'wp'; c.exiting = false;
-    c.tramNext = { route: other, e: e2, s: s2 + 30 };
-  }
   updLoop(c, dt) {
     const lp = c.loop, n = lp.pts.length;
     if (c.dwell > 0) { c.dwell -= dt; c.v = 0; c.brake = true; c.wink = -1; return; }
@@ -492,15 +456,15 @@ export class Traffic {
     const dx = w.x - c.x, dz = w.z - c.z, dist = Math.hypot(dx, dz);
     if (c.pauseT > 0) { c.pauseT -= dt; c.v = 0; c.brake = true; return; }
     c.revOn = !!w.rev;
-    let vt = w.rev ? 1.4 : c.tram ? 3.5 : 2.8;
-    if (w.last) vt = Math.min(vt, dist * 0.9 + (c.tram ? 2 : 0.25));
+    let vt = w.rev ? 1.4 : 2.8;
+    if (w.last) vt = Math.min(vt, dist * 0.9 + 0.25);
     for (const o of this.ob) {
       if (o.c === c) continue;
       const ox = o.x - c.x, oz = o.z - c.z, od = Math.hypot(ox, oz);
       if (od < c.m.L / 2 + 2.5 && dist > 0.01 && (ox * dx + oz * dz) / (od * dist + 1e-6) > 0.5 && !(o.c.st === 'park' && od > 2.6)) { vt = 0; break; }
     }
     // 駐車場の出入口は1台ずつ（入口通路の占有）
-    const lot = !c.tram && c.parkPlan && c.parkPlan.lot;
+    const lot = c.parkPlan && c.parkPlan.lot;
     if (lot) {
       const need = (!c.exiting && c.wi >= 1 && c.wi <= 3) || (c.exiting && c.wi >= 1);
       if (need) {
@@ -526,7 +490,6 @@ export class Traffic {
     if (step >= dist) {
       c.x = w.x; c.z = w.z; c.wi++; if (w.pause) { c.pauseT = w.pause; c.v = 0; }
       if (c.wi >= c.wps.length) {
-        if (c.tram) { const t = c.tramNext; c.route = t.route; c.e = t.e.id; c.k = 0; c.s = t.s; c.lat = 0; c.st = 'lane'; c.served = null; this.plan(c); return; }
         if (!c.exiting) {
           c.st = 'park'; c.v = 0; c.revOn = false; c.yaw = c.parkPlan.slot.yaw + Math.PI;
           const k = c.parkPlan.lot.kind, R = this.R();
@@ -535,7 +498,7 @@ export class Traffic {
         else { c.st = 'join'; c.v = 0; }
       }
     } else { c.x += dx / dist * step; c.z += dz / dist * step; }
-    c.wink = c.tram ? 0 : c.exiting ? -1 : (c.wi < 3 ? -1 : 0);
+    c.wink = c.exiting ? -1 : (c.wi < 3 ? -1 : 0);
   }
   updPark(c, dt) {
     c.parkT -= dt; c.brake = false; c.wink = 0;

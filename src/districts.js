@@ -1,9 +1,9 @@
 // v0.5 新しい地区：学園地区（大学キャンパス・学生街）とニュータウン（曲線道路・袋小路・小学校・公園）、
 // 既存の郊外に旧街道（斜めに抜ける細い道）。道路は格子ではなく曲線のポリラインで、道路網（信号・NPC・ナビ）に接続する
-import { L } from './textures.js';
-import { rng, clamp } from './math.js';
-import { MODELS, pickModel, pickColor, pickPassenger } from './carmodels.js';
-import { installDyn, txt } from './props.js';
+import { L } from './textures.js?v=0.6.2';
+import { rng, clamp } from './math.js?v=0.6.2';
+import { MODELS, pickModel, pickColor, pickPassenger, pickFit } from './carmodels.js?v=0.6.2';
+import { installDyn, txt } from './props.js?v=0.6.2';
 
 // 区間の定義（両端は交差点ノード。途中点はなめらかな曲線にする）。axis は信号の位相に使う向き
 export const CURVES = [
@@ -73,6 +73,15 @@ export function corridorDist(city, x, z) {
 }
 
 // 直線道路（格子の道）の上には置かない
+function footClear(city, x, z, yaw, w, d) {
+  const fx = Math.sin(yaw), fz = Math.cos(yaw), rx = Math.cos(yaw), rz = -Math.sin(yaw), nu = Math.max(2, Math.ceil(w / 2)), nv = Math.max(2, Math.ceil(d / 2));
+  for (let i = 0; i <= nu; i++) for (let j = 0; j <= nv; j++) {
+    const u = (i / nu - 0.5) * w, v = 0.8 + j / nv * (d - 0.8), qx = x + rx * u + fx * v, qz = z + rz * u + fz * v;
+    if (straightHit(city, qx, qz)) return false;
+    for (const l of city.mm.lanes) { if ((l.kind !== 'lane' && l.kind !== 'farm') || l.poly) continue; const m = (l.w || 2.5) + 0.4; if (l.axis === 'ns' ? (Math.abs(qx - l.c) < m && qz > l.a - m && qz < l.b + m) : (Math.abs(qz - l.c) < m && qx > l.a - m && qx < l.b + m)) return false; }
+  }
+  return true;
+}
 function straightHit(city, x, z) { for (const r of city.roads) { const e = r.sp.ext + 1; if (r.axis === 'ns' ? (Math.abs(x - r.c) < e && z > r.a - e && z < r.b + e) : (Math.abs(z - r.c) < e && x > r.a - e && x < r.b + e)) return true; } return false; }
 // ---------- 小さな建物ビルダー（回転可能。ローカル座標で組んで setXf で置く） ----------
 const WALLS = [[0.95, 0.94, 0.9], [0.88, 0.86, 0.82], [0.93, 0.9, 0.84], [0.8, 0.84, 0.86], [0.9, 0.88, 0.92], [0.98, 0.96, 0.92], [0.72, 0.7, 0.66], [0.86, 0.8, 0.72]];
@@ -94,7 +103,14 @@ function newHouse(g, R, city, opt = {}) {
 }
 function place(city, x, z, yaw, w, d, fn, kind = 'b') { // 回転した建物の当たり判定（AABB）と描画登録
   const c = Math.cos(yaw), s = Math.sin(yaw), cx = x + s * d / 2, cz = z + c * d / 2, bb = aabb(cx, cz, yaw, w, d);
-  city.addBox(bb.x0 + 0.6, bb.z0 + 0.6, bb.x1 - 0.6, bb.z1 - 0.6, kind);
+  // v0.6 斜めの建物は外接AABB1個だと角が曲線道路にはみ出して「見えない壁」になるため、外周を約3m角のセルに分けて当たり判定を置く
+  const ax = Math.abs(Math.sin(2 * yaw)) < 0.02;
+  if (ax) city.addBox(bb.x0 + 0.6, bb.z0 + 0.6, bb.x1 - 0.6, bb.z1 - 0.6, kind);
+  else { const fx = s, fz = c, rx = c, rz = -s, W = w - 1.2, D = d - 1.2, nu = Math.max(1, Math.round(W / 3)), nv = Math.max(1, Math.round(D / 3));
+    for (let i = 0; i < nu; i++) for (let j = 0; j < nv; j++) { if (i > 0 && j > 0 && i < nu - 1 && j < nv - 1) continue;
+      const u0 = -W / 2 + W * i / nu, u1 = -W / 2 + W * (i + 1) / nu, v0 = 0.6 + D * j / nv, v1 = 0.6 + D * (j + 1) / nv; let X0 = 1e9, X1 = -1e9, Z0 = 1e9, Z1 = -1e9;
+      for (const [u, v] of [[u0, v0], [u1, v0], [u0, v1], [u1, v1]]) { const qx = x + rx * u + fx * v, qz = z + rz * u + fz * v; X0 = Math.min(X0, qx); X1 = Math.max(X1, qx); Z0 = Math.min(Z0, qz); Z1 = Math.max(Z1, qz); }
+      const sh = (Math.min(X1 - X0, Z1 - Z0) - Math.min(u1 - u0, v1 - v0)) * 0.25; city.addBox(X0 + sh, Z0 + sh, X1 - sh, Z1 - sh, kind); } }
   city.mm.blds.push({ ...bb, h: 7 });
   city.add(cx, cz, g => { for (const k of ['s', 'det', 'd1', 'd2', 'glow']) g[k].setXf(x, 0, z, yaw); fn(g); for (const k of ['s', 'det', 'd1', 'd2', 'glow']) g[k].clearXf(); });
 }
@@ -108,7 +124,9 @@ function frontage(city, e, side, s0, s1, setback, pick, used) {
     // 道路と反対向きに奥行きをとる。ほかの道路の帯・既存の建物と重なる場合は飛ばす
     const back = [p[0] + Math.sin(yaw) * it.d, p[2] + Math.cos(yaw) * it.d], mid = [(p[0] + back[0]) / 2, (p[2] + back[1]) / 2];
     const clear = [p, [back[0], 0, back[1]], [mid[0], 0, mid[1]]].every(q => corridorDist(city, q[0], q[2]) > 0.3 && city.allowed(q[0], q[2]) && Math.abs(q[0]) < 1990 && q[2] < 1990 && !straightHit(city, q[0], q[2]) && !used.some(u => q[0] > u.x0 && q[0] < u.x1 && q[2] > u.z0 && q[2] < u.z1)) && !(it.avoid && it.avoid(p));
-    if (clear) { const fr = aabb((p[0] + back[0]) / 2, (p[2] + back[1]) / 2, yaw, it.w, it.d); used.push(fr); it.build(p[0], p[2], yaw); }
+    // v0.6 敷地全体（2m間隔のサンプル）が生活道路・直線道路にかからないこと（前・中・奥の3点だけだと斜めの敷地の角が車線をふさいでいた）
+    const ok2 = clear && footClear(city, p[0], p[2], yaw, it.w, it.d);
+    if (ok2) { const fr = aabb((p[0] + back[0]) / 2, (p[2] + back[1]) / 2, yaw, it.w, it.d); used.push(fr); it.build(p[0], p[2], yaw); }
     s += it.w + 1.5;
   }
 }
@@ -182,7 +200,7 @@ export function districtsPost(city) {
   for (const e of byName('学園北通り')) frontage(city, e, 1, 15, e.len - 15, 0.5, aptPick, used);
   for (const e of byName('学園通り')) frontage(city, e, 1, 14, e.len - 14, 0.5, (R, s) => (s < 60 ? null : aptPick(R)), used);
   // ---- ニュータウン ----
-  const housePick = (R) => { const big = R() < 0.12; return big ? { w: 20, d: 22, build: (x, z, yaw) => place(city, x, z, yaw, 20, 22, g => newMansion(g, R)) } : { w: 11.5, d: 17, build: (x, z, yaw) => { place(city, x, z, yaw, 11.5, 17, g => { newHouse(g, R, city); }); if (R() < 0.6) { const m = pickModel(R), c = pickColor(m, R), ox = x + Math.sin(yaw) * 2.5, oz = z + Math.cos(yaw) * 2.5; city.addCarBox(ox, oz, yaw, m); city.add(ox, oz, g => city.bakeCar(g.det, m, c, ox, oz, yaw + (R() < 0.5 ? Math.PI : 0))); } } }; };
+  const housePick = (R) => { const big = R() < 0.12; return big ? { w: 20, d: 22, build: (x, z, yaw) => place(city, x, z, yaw, 20, 22, g => newMansion(g, R)) } : { w: 11.5, d: 17, build: (x, z, yaw) => { place(city, x, z, yaw, 11.5, 17, g => { newHouse(g, R, city); }); const m = R() < 0.6 ? pickFit(R, 'res', 4.5, 2.0) : null; if (m) { const c = pickColor(m, R), ox = x + Math.sin(yaw) * 2.6, oz = z + Math.cos(yaw) * 2.6; city.addCarBox(ox, oz, yaw, m); city.add(ox, oz, g => city.bakeCar(g.det, m, c, ox, oz, yaw + (R() < 0.5 ? Math.PI : 0))); } } }; };
   let nh = 0;
   for (const e of edges) if (['nt', 'ntc'].includes(e.sp.kind)) for (const sg of [1, -1]) { const n0 = used.length; frontage(city, e, sg, 10, e.len - (e.seg.dead ? 2 : 12), 0.6, housePick, used); nh += used.length - n0; }
   // 学園地区の南端（川沿いの住宅地との間）にも住宅
@@ -199,13 +217,10 @@ export function districtsPost(city) {
   city.pedAreas.push({ x0: 300, x1: 760, z0: 1340, z1: 1700, w: 3.0, campus: true, name: 'campus' }, { x0: 1330, x1: 1440, z0: 1410, z1: 1510, w: 0.8, name: 'park' });
 }
 function streetTree(city, gb, x, z, sp, R) {
-  if (sp === 1) { // いちょう（円すい形・黄緑）
-    gb.cyl(x, 0, z, 0.14, 2.0, 5, { c: [0.38, 0.3, 0.22] }, false);
-    for (let k = 0; k < 3; k++) gb.cbox(x, 2.6 + k * 1.3, z, 2.8 - k * 0.8, 1.4, 2.8 - k * 0.8, { c: [0.72, 0.8, 0.35], lay: L.TREE });
-  } else if (sp === 2) { // さくら
-    gb.cyl(x, 0, z, 0.16, 2.2, 5, { c: [0.35, 0.26, 0.22] }, false);
-    gb.cbox(x, 3.3, z, 4.0, 2.0, 4.0, { c: [0.97, 0.8, 0.87] }); gb.cbox(x + 0.8, 4.2, z - 0.5, 2.4, 1.2, 2.4, { c: [0.98, 0.84, 0.9] });
-  } else city.tree(gb, x, z, R); // けやき
+  if (sp === 2) { // さくら（樹冠の下端は約3m）
+    gb.cyl(x, 0, z, 0.16, 3.0, 6, { c: [0.35, 0.26, 0.22] }, false);
+    gb.cbox(x, 3.9, z, 3.6, 1.8, 3.6, { c: [0.85, 0.7, 0.76] }); gb.cbox(x + 0.7, 4.7, z - 0.4, 2.2, 1.1, 2.2, { c: [0.87, 0.74, 0.8] });
+  } else city.tree(gb, x, z, R, sp === 1 ? 1 : 0); // いちょう／けやき
 }
 // 大学キャンパス
 function campus(city, univ) {
@@ -283,7 +298,7 @@ function studentShop(city, x, z, yaw, k, R) {
     });
     city.stats.conbini = (city.stats.conbini || 0) + 1;
     const c = [x + Math.sin(yaw) * 6, z + Math.cos(yaw) * 6]; (city.pois = city.pois || []).push({ t: 'conv', x: c[0], z: c[1], name: 'ことりマート' });
-    for (let i = 0; i < 4; i++) if (R() < 0.65) { const m = pickPassenger(R), lx = -6 + i * 4.2, lz = 6, cx = x + Math.cos(yaw) * lx + Math.sin(yaw) * lz, cz = z - Math.sin(yaw) * lx + Math.cos(yaw) * lz, b = i === 0 ? null : i % 3; city.addCarBox(cx, cz, yaw, m, b); city.add(cx, cz, g => city.bakeCar(b == null ? g.det : g['nc' + b], m, pickColor(m, R), cx, cz, yaw + Math.PI)); } // 24時間営業：1台は夜も残る
+    for (let i = 0; i < 4; i++) if (R() < 0.65) { const m = pickFit(R, 'pass', 4.95), lx = -6 + i * 4.2, lz = 6, cx = x + Math.cos(yaw) * lx + Math.sin(yaw) * lz, cz = z - Math.sin(yaw) * lx + Math.cos(yaw) * lz, b = i === 0 ? null : i % 3; city.addCarBox(cx, cz, yaw, m, b); city.add(cx, cz, g => city.bakeCar(b == null ? g.det : g['nc' + b], m, pickColor(m, R), cx, cz, yaw + Math.PI)); } // 24時間営業：1台は夜も残る
     return;
   }
   const w = 9, h = 3.2 + (R() < 0.5 ? 2.8 : 0), wc = WALLS[R() * WALLS.length | 0];
@@ -333,7 +348,7 @@ function newtownCore(city, schoolSign) {
   B(1740, 1505, 1850, 1555, 8, { c: [0.88, 0.92, 0.95], mat: 3, side: { lay: L.OFFICE, tw: 8, th: 4 }, top: { lay: L.ROOF, tw: 8 } }, g => g.s.panel(1820, 1504.9, 1770, 1504.9, 5.5, 7.5, 0.02, [0, 0, -1], { c: [1, 1, 1], mat: 16, lay: L.SG_CLINIC }));
   city.mm.lots.push({ x0: 1605, x1: 1855, z0: 1425, z1: 1495 });
   const lotCars = [];
-  for (let i = 0; i < 18; i++) for (const row of [1440, 1478]) { if (R() > 0.55) continue; const m = pickPassenger(R), x = 1615 + i * 13, yaw = row < 1460 ? 0 : Math.PI, b = i % 3; lotCars.push([m, pickColor(m, R), x, row, yaw + (R() < 0.7 ? Math.PI : 0), b]); city.addCarBox(x, row, yaw, m, b); }
+  for (let i = 0; i < 18; i++) for (const row of [1440, 1478]) { if (R() > 0.55) continue; const m = pickFit(R, 'pass', 4.95), x = 1615 + i * 13, yaw = row < 1460 ? 0 : Math.PI, b = i % 3; lotCars.push([m, pickColor(m, R), x, row, yaw + (R() < 0.7 ? Math.PI : 0), b]); city.addCarBox(x, row, yaw, m, b); }
   city.add(1730, 1460, g => { g.d1.flat(1605, 1425, 1855, 1495, 0.02, { c: [0.95, 0.95, 0.95], mat: 7, lay: L.ASPHALT }, 8); for (let i = 0; i < 19; i++) for (const row of [1440, 1478]) g.d2.flat(1608.5 + i * 13, row - 2.6, 1608.6 + i * 13, row + 2.6, 0.03, { c: [0.95, 0.95, 0.93] }); g.glow.flat(1600, 1420, 1860, 1500, 0.06, { c: [0.95, 0.95, 1], mat: 5, lay: L.GLOW }); });
   city.add(1730, 1458, g => { for (const [m, col, x, z, yaw, b] of lotCars) city.bakeCar(g['nc' + b], m, col, x, z, yaw); }); // 閉店後は消える（3段階）
   // 分譲マンション
@@ -397,6 +412,7 @@ function districtLanes(city) {
   city.curveCorr = city.corridors.filter(c => !c.lane).map(c => { const xs = c.pts.map(p => p[0]), zs = c.pts.map(p => p[1]); return { ...c, bb: [Math.min(...xs), Math.min(...zs), Math.max(...xs), Math.max(...zs)], hw: c.hw ?? c.w - 1 }; });
   for (const s of city.curveSegs) { const cc = city.curveCorr.find(c => c.pts === s.full); if (cc) { cc.hw = s.road.sp.hw; cc.ext = s.road.sp.ext; } }
   const big = city.usedRects.filter(r => (r.x1 - r.x0) * (r.z1 - r.z0) > 600).map(r => ({ x0: r.x0 - 3, x1: r.x1 + 3, z0: r.z0 - 3, z1: r.z1 + 3 }));
+  const jn = city.nodes.filter(n => n.ns.length + n.ew.length >= 3 && (n.ns.some(r => r.curve) || n.ew.some(r => r.curve)));
   const cuts = city.swCuts = city.swCuts || [], lanes = city.dLanes = [], asph = { c: [0.95, 0.95, 0.95], mat: 7, lay: L.ASPHALT };
   for (const D of DIST_RECTS) {
     const mx0 = gridExt(city, 'ns', D.x0), mx1 = gridExt(city, 'ns', D.x1), mz0 = gridExt(city, 'ew', D.z0), mz1 = gridExt(city, 'ew', D.z1);
@@ -410,6 +426,7 @@ function districtLanes(city) {
       const ns = ln.axis === 'ns', A = ns ? Z0 : X0, Bn = ns ? Z1 : X1, dir = ns ? [0, 1] : [1, 0];
       const P = t => ns ? [ln.c, t] : [t, ln.c];
       const state = t => { const [x, z] = P(t); if (big.some(r => x > r.x0 && x < r.x1 && z > r.z0 && z < r.z1)) return 'ex';
+        if (jn.some(n => Math.hypot(n.x - x, n.z - z) < 22)) return 'ex'; // 曲線道路の交差点のすぐ脇には生活道路をつながない
         const n = nearCurve(city, x, z); if (!n.c) return 'ok'; const dot = Math.abs(n.dir[0] * dir[0] + n.dir[1] * dir[1]);
         if (n.d < n.c.ext + 4) return 'cor'; if (n.d < n.c.ext + 34 && dot > 0.75) return 'par'; return 'ok'; };
       const st = []; for (let t = A; t <= Bn; t += 2) st.push([t, state(t)]);
@@ -425,6 +442,12 @@ function districtLanes(city) {
           if (before === 'cor') t0 = ext(t0, -1); else if (before === 'edge') t0 = A - (ns ? mz0 : mx0) + 0.5 + (ns ? gridHw(city, 'ew', D.z0) : gridHw(city, 'ns', D.x0)) - 0.5;
           if (after === 'cor') t1 = ext(t1, 1); else if (after === 'edge') t1 = Bn + (ns ? mz1 : mx1) - (ns ? gridHw(city, 'ew', D.z1) : gridHw(city, 'ns', D.x1));
           const piece = ns ? { axis: 'ns', c: ln.c, a: t0, b: t1 } : { axis: 'ew', c: ln.c, a: t0, b: t1 };
+          // 外周の格子道路に出るところは歩道を切り下げる（段差なしで出入り）
+          for (const [end, isEdge, gc] of [[t0, before === 'edge', ns ? D.z0 : D.x0], [t1, after === 'edge', ns ? D.z1 : D.x1]]) if (isEdge) {
+            const lo = Math.min(end, gc), hi = Math.max(end, gc) + (end > gc ? 0 : 0);
+            const r = ns ? { x0: ln.c - 2.7, x1: ln.c + 2.7, z0: Math.min(gc, end) - 1, z1: Math.max(gc, end) + 3 * Math.sign(end - gc) * 0 + 1 } : { x0: Math.min(gc, end) - 1, x1: Math.max(gc, end) + 1, z0: ln.c - 2.7, z1: ln.c + 2.7 };
+            void lo; void hi; city.addDriveway(r);
+          }
           lanes.push(piece);
         }
         i = j + 1;
@@ -478,13 +501,34 @@ function districtInfill(city) {
   city.stats.districtParcels = parcels; city.stats.districtGreens = greens;
 }
 
-// 曲線道路 e の片側 sg にある歩道切り下げ位置（道路に沿った距離 s）
+// 曲線道路 e の片側 sg の歩道で、生活道路が横切る位置（道路に沿った距離 s）。歩道の中心線を0.5mおきに調べ、生活道路の舗装（幅5m）に入る区間の中央を返す
 function cutS(city, e, sg) {
   const key = '_cut' + sg; if (e[key]) return e[key];
-  const out = [];
-  for (const c of city.swCuts || []) {
-    let bs = -1, bd = 1e9; for (let s = 0; s <= e.len; s += 1) { const p = city.edgePt(e, s, sg * (e.sp.hw + e.sp.sw / 2)), d = Math.hypot(p[0] - c.x, p[2] - c.z); if (d < bd) { bd = d; bs = s; } }
-    if (bd < 3.5) out.push(bs);
+  const out = [], L = city.dLanes || [], o = sg * (e.sp.hw + e.sp.sw / 2);
+  let run = null;
+  for (let s = 0; s <= e.len; s += 0.5) {
+    const p = city.edgePt(e, s, o); let hit = false;
+    for (const l of L) { const ns = l.axis === 'ns', u = ns ? p[0] : p[2], t = ns ? p[2] : p[0]; if (Math.abs(u - l.c) < 2.6 && t > l.a - 0.5 && t < l.b + 0.5) { hit = true; break; } }
+    if (hit && run == null) run = s; else if (!hit && run != null) { out.push((run + s) / 2); run = null; }
   }
-  return e[key] = out.sort((a, b) => a - b);
+  if (run != null) out.push((run + e.len) / 2);
+  return e[key] = out;
+}
+
+// 修正92：学園地区・ニュータウンの空き地率（実行時に計算）。4m格子の各点が、道路（格子・曲線の車道＋歩道）／生活道路／施設・沿道建物の敷地／
+// 区画（住宅・駐車場・緑地など）／当たり判定のある構造物 のどれにも入らなければ「空き地」と数える
+export function districtCoverage(city, step = 4) {
+  const cnt = { road: 0, lane: 0, facility: 0, parcel: 0, green: 0, empty: 0 }, inR = (r, x, z) => x >= r.x0 && x <= r.x1 && z >= r.z0 && z <= r.z1;
+  for (let z = 1000 + step / 2; z < 2000; z += step) for (let x = step / 2; x < 2000; x += step) {
+    let k = null;
+    for (const r of city.roads) if (!r.curve && (r.axis === 'ns' ? Math.abs(x - r.c) < r.sp.ext && z >= r.a && z <= r.b : Math.abs(z - r.c) < r.sp.ext && x >= r.a && x <= r.b)) { k = 'road'; break; }
+    if (!k) for (const c of city.curveCorr || []) { if (x < c.bb[0] - 15 || x > c.bb[2] + 15 || z < c.bb[1] - 15 || z > c.bb[3] + 15) continue; for (let i = 0; i < c.pts.length - 1 && !k; i++) { const a = c.pts[i], b = c.pts[i + 1], vx = b[0] - a[0], vz = b[1] - a[1], t = clamp(((x - a[0]) * vx + (z - a[1]) * vz) / (vx * vx + vz * vz || 1), 0, 1); if (Math.hypot(a[0] + vx * t - x, a[1] + vz * t - z) < (c.ext || 8)) k = 'road'; } if (k) break; }
+    if (!k) for (const l of city.dLanes || []) if (l.axis === 'ns' ? Math.abs(x - l.c) < 2.5 && z >= l.a && z <= l.b : Math.abs(z - l.c) < 2.5 && x >= l.a && x <= l.b) { k = 'lane'; break; }
+    if (!k) for (const r of city.usedRects) if (inR(r, x, z)) { k = 'facility'; break; }
+    if (!k) for (const r of city.dFilled || []) if (inR(r, x, z)) { k = r.k === 'g' ? 'green' : 'parcel'; break; }
+    if (!k && [...city.query(x, z, 1)].length) k = 'parcel';
+    cnt[k || 'empty']++;
+  }
+  const tot = Object.values(cnt).reduce((a, b) => a + b, 0), pct = {}; for (const k in cnt) pct[k] = +(cnt[k] / tot * 100).toFixed(2);
+  return { step, samples: tot, pct };
 }

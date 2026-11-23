@@ -1,10 +1,10 @@
 // テクスチャ配列（256x256 レイヤー）をCanvasで手続き生成。アルファ = 夜間発光マスク
-import { rng } from './math.js';
+import { rng } from './math.js?v=0.6.2';
 export const TS = 256;
 export const L = {};
 const layers = []; // {name, draw(ctx, img)}
 const names = ['WHITE', 'OFFICE', 'OFFICE2', 'APT', 'HOUSE', 'SHOP', 'SHUTTER', 'ASPHALT', 'SIDEWALK', 'GRASS', 'PADDY', 'WATER',
-  'ROOF', 'KAWARA', 'METAL', 'PLATE_K', 'PLATE_W', 'STOP', 'SP30', 'SP40', 'SP50', 'SP60', 'GUIDE', 'METER', 'PANEL', 'PARK_P', 'MANSION', 'HOTEL', 'FIELD', 'TRAINWIN', 'SEAT', 'GLOW', 'TREE', 'ONEWAY', 'NOENTRY', 'RAIL', 'ROCK', 'TUNNELWALL', 'FOREST', 'TRAMWIN', 'CURVE', 'BACK_RND', 'BACK_TRI', 'BACK_DIA', 'TOMARE', 'JOKO', 'SCHOOLZ', 'MANHOLE', 'GRATE', 'BUSSTOP', 'TOBIDASHI', 'NOBORI', 'CROSSW', 'HOUSE_DARK', 'CLOUD', 'LAUNDRY', 'BIKE_RACK', 'WATERPAD', 'CROP', 'TEAROW', 'TACTILE', 'POSTER'];
+  'ROOF', 'KAWARA', 'METAL', 'PLATE_K', 'PLATE_W', 'STOP', 'SP30', 'SP40', 'SP50', 'SP60', 'GUIDE', 'METER', 'PANEL', 'PARK_P', 'MANSION', 'HOTEL', 'FIELD', 'TRAINWIN', 'SEAT', 'GLOW', 'TREE', 'ONEWAY', 'NOENTRY', 'RAIL', 'ROCK', 'TUNNELWALL', 'FOREST', 'CURVE', 'BACK_RND', 'BACK_TRI', 'BACK_DIA', 'TOMARE', 'JOKO', 'SCHOOLZ', 'MANHOLE', 'GRATE', 'BUSSTOP', 'TOBIDASHI', 'NOBORI', 'CROSSW', 'HOUSE_DARK', 'CLOUD', 'LAUNDRY', 'BIKE_RACK', 'WATERPAD', 'CROP', 'TEAROW', 'TACTILE', 'POSTER'];
 names.forEach((n, i) => L[n] = i);
 
 export const FONT = "'Hiragino Kaku Gothic ProN','Hiragino Sans','Noto Sans JP','Noto Sans CJK JP','Yu Gothic','Meiryo',sans-serif";
@@ -52,7 +52,7 @@ export const SIGNS = [
   ['COINP', 'コインパーキング 100円/30分', '#ffd200', '#222222', 'P', '#0a4fb5'],
   ['TSUKI', '月極駐車場 空きあり', '#ffffff', '#1a4ea8', 'P', '#e02020'],
   ['FACTORY', '水瀬精機 第二工場', '#e9e9e2', '#2a4a7a', 'FACTORY', '#2a4a7a'],
-  ['SOKO', '北日本ロジ 倉庫', '#e6e6e0', '#b5361c', 'LOGISTICS', '#b5361c'],
+  ['SOKO', 'みなせ倉庫', '#e6e6e0', '#b5361c', 'LOGISTICS', '#b5361c'],
   ['SHOP1', '洋品店 さくら', '#f7e3e8', '#a8204a', '', '#a8204a'],
   ['SHOP2', '八百屋 まるき', '#1d6b2d', '#ffffff', '', '#ffffff'],
   ['SHOP3', 'カフェ こもれび', '#4a3424', '#f3e2c0', 'CAFE', '#f3e2c0'],
@@ -72,7 +72,6 @@ export const SIGNS = [
   ['TIRE', 'タイヤ館 くるま堂', '#222222', '#ffcc00', 'TIRE', '#ffffff'],
   ['TUNNEL', '水瀬トンネル  延長 300m', '#2c2c2c', '#ffffff', '', '#ffffff'],
   ['MICHI', '道の駅 みなせ峠', '#1f5d2e', '#ffffff', '休憩', '#ffffff'],
-  ['TRAMSTOP', '電停  市役所前', '#1b4fa0', '#ffffff', 'TRAM', '#ffffff'],
   ['RIVERPARK', '水瀬川河川公園', '#ffffff', '#1d6b3a', 'PARK', '#1d6b3a'],
   ['SHRINE', '水瀬神社', '#3a2a1a', '#f3e2c0', '', '#f3e2c0'],
   ['FARMCOOP', 'みなせ農協 農産物直売所', '#11804a', '#ffffff', '直売', '#ffffff'],
@@ -264,9 +263,6 @@ function drawLayer(i, ctx) {
     case 'ROCK': fill(120, 116, 108, 0); for (let k = 0; k < 300; k++) { const c = 90 + R() * 70; px(img, R() * 250 | 0, R() * 250 | 0, 6 + R() * 20 | 0, 3 + R() * 10 | 0, c, c - 3, c - 8, 0); } break;
     case 'TUNNELWALL': fill(170, 168, 160, 0); for (let y = 0; y < TS; y += 32) px(img, 0, y, TS, 2, 120, 118, 112, 0); for (let x = 0; x < TS; x += 64) px(img, x, 0, 2, TS, 120, 118, 112, 0); noise(img, 14, R); break;
     case 'FOREST': fill(52, 82, 44, 0); for (let k = 0; k < 900; k++) { const c = 30 + R() * 50; px(img, R() * 252 | 0, R() * 252 | 0, 3 + R() * 6 | 0, 3 + R() * 6 | 0, c * 0.7, c + 25, c * 0.5, 0); } break;
-    case 'TRAMWIN':
-      fill(235, 238, 240, 0); px(img, 0, 175, TS, 40, 22, 110, 70, 0); px(img, 0, 215, TS, 8, 230, 200, 40, 0);
-      for (let x = 8; x < TS; x += 50) px(img, x, 40, 40, 110, 60, 80, 95, 255); break;
     case 'MANHOLE': { fill(0, 0, 0, 0); const d = img.data; for (let y = 0; y < TS; y++) for (let x = 0; x < TS; x++) { const r = Math.hypot(x - 128, y - 128), k = (y * TS + x) * 4; if (r < 120) { const g = (r > 108 ? 70 : ((x + y) % 24 < 3 || (x - y + 512) % 24 < 3) ? 55 : 92); d[k] = g; d[k + 1] = g; d[k + 2] = g + 4; d[k + 3] = 255; } } break; }
     case 'GRATE': fill(60, 62, 64, 0); for (let x = 0; x < TS; x += 16) px(img, x, 20, 8, 216, 25, 25, 27, 0); break;
     case 'HOUSE_DARK': // 空き家：窓は暗いまま、雨だれ汚れ

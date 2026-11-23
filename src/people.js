@@ -1,6 +1,6 @@
 // 人物（運転者・歩行者）と二輪車のローポリモデル、歩行者の簡易AI
 // 運転者は 年代3 × 性別2 × 服装3 = 18 通りをパラメータから生成（実在人物・キャラクターではない汎用の人形）
-import { rng } from './math.js';
+import { rng } from './math.js?v=0.6.2';
 
 export const AGES = ['青年', '壮年', '老人'], SEXES = ['男性', '女性'], OUTFITS = ['普段着', 'カジュアル', 'スーツ'];
 const SKIN = [[0.93, 0.78, 0.66], [0.88, 0.72, 0.6], [0.85, 0.7, 0.6]];
@@ -36,10 +36,10 @@ export function buildPerson(gb, p) {
   if (p.child) { gb.box(-hw * 0.9, hipY + 0.2 * k, -0.11 * k - 0.16, hw * 0.9, shY, -0.11 * k, { c: sex ? [0.8, 0.15, 0.2] : [0.1, 0.1, 0.12] }); gb.box(-0.1 * k, hy + 0.2 * k, hz - 0.12 * k, 0.1 * k, hy + 0.27 * k, hz + 0.12 * k, { c: [0.95, 0.85, 0.2] }); } // ランドセルと黄色い帽子
   if (age === 2 && p.cane && !sit) gb.beam([hw + 0.12, 0.02, 0.22], [hw + 0.08, hipY, 0.12], 0.02, { c: [0.35, 0.25, 0.18] }); // 杖
   if (p.helmet) gb.box(-0.12 * k, hy + 0.1 * k, hz - 0.13 * k, 0.12 * k, hy + 0.3 * k, hz + 0.13 * k, { c: p.helmet });
-  // 脚
+  // 脚（v0.6.1 運転席では footY で足を床の上に置き、車体の下へはみ出さないようにする）
   for (const s of [-1, 1]) {
     const hx = s * hw * 0.5;
-    if (sit) { const knee = [hx, hipY + 0.05, 0.42 * k], foot = [hx * 1.1, hipY - 0.38 * k, 0.55 * k]; gb.beam([hx, hipY, 0.02], knee, 0.075 * k, leg); gb.beam(knee, foot, 0.065 * k, leg); gb.cbox(foot[0], foot[1] + 0.03, foot[2] + 0.06, 0.1 * k, 0.07, 0.22 * k, shoe); }
+    if (sit) { const fy = p.footY != null ? Math.max(hipY - 0.38 * k, p.footY) : hipY - 0.38 * k, knee = [hx, hipY + 0.05 + (fy - (hipY - 0.38 * k)) * 0.5, 0.42 * k], foot = [hx * 1.1, fy, 0.55 * k + (fy - (hipY - 0.38 * k)) * 0.4]; gb.beam([hx, hipY, 0.02], knee, 0.075 * k, leg); gb.beam(knee, foot, 0.065 * k, leg); gb.cbox(foot[0], foot[1] + 0.03, foot[2] + 0.06, 0.1 * k, 0.07, 0.22 * k, shoe); }
     else { const a = sw * s * 0.38, knee = [hx, hipY * 0.5, Math.sin(a) * hipY * 0.5], foot = [hx, 0.05, Math.sin(a) * hipY * 0.85 + (a < 0 ? -0.04 : 0.04)]; gb.beam([hx, hipY, 0], knee, 0.07 * k, leg); gb.beam(knee, foot, 0.06 * k, leg); gb.cbox(foot[0], 0.04, foot[2] + 0.05, 0.1 * k, 0.08, 0.24 * k, shoe); }
   }
   // 腕（運転中はハンドルを握る）
@@ -55,13 +55,13 @@ export function buildPerson(gb, p) {
   return { H, eyeY: hy + 0.13 * k, eyeZ: hz + 0.1 * k };
 }
 // 運転者：目の位置 eye（車体座標）と、ハンドル中心 steer から、座面基準のモデルを置く
-export function buildDriver(gb, sel, eye, steer, steerR = 0.18) {
+export function buildDriver(gb, sel, eye, steer, steerR = 0.18, floorY = 0.26) {
   const tmp = { age: sel.age, sex: sel.sex, outfit: sel.outfit, pose: 'sit', seed: 3 };
   // まず仮に作って目の高さを測り、目が eye に来るよう平行移動
   const probe = buildPerson({ box() { }, beam() { }, cbox() { } }, tmp);
   const ox = eye[0], oy = eye[1] - probe.eyeY, oz = eye[2] - probe.eyeZ;
   const hands = [[steer[0] - ox - steerR * 0.9, steer[1] - oy + 0.04, steer[2] - oz - 0.03], [steer[0] - ox + steerR * 0.9, steer[1] - oy + 0.04, steer[2] - oz - 0.03]];
-  gb.setXf(ox, oy, oz, 0); buildPerson(gb, { ...tmp, hands, noHands: true }); gb.clearXf();
+  gb.setXf(ox, oy, oz, 0); buildPerson(gb, { ...tmp, hands, noHands: true, footY: floorY + 0.01 - oy }); gb.clearXf();
 }
 // ハンドルを握る手（ハンドルと一緒に回すため別のメッシュ。ハンドル座標：リムは半径 r の円）
 export function buildHands(gb, sel, r = 0.17) {

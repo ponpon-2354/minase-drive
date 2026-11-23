@@ -1,7 +1,7 @@
 // プレイヤー車両（ミライース）の物理：自転車モデル＋タイヤ横力（摩擦円）＋CVT
 // v0.3：後退旋回の修正、クリープ／坂道、壁でのスライド、路面種別、スタック自動復帰
-import { clamp } from './math.js';
-import { MIRA } from './carmodels.js';
+import { clamp } from './math.js?v=0.6.2';
+import { MIRA } from './carmodels.js?v=0.6.2';
 
 // 路面種別：0=草地・畑 1=舗装 2=歩道 3=砂利・敷地
 // 路面：草地・砂利は少し滑りやすいだけで、速度の上限（抵抗による頭打ち）は設けない
@@ -19,8 +19,18 @@ export class Player {
     this.assist = true;
   }
   reset(x, z, yaw, cy = 0.5) {
-    Object.assign(this, { x, z, y: this.city ? this.city.groundY(x, z, cy) : 0, yaw, vx: 0, vy: 0, w: 0, steer: 0, rpm: 800, gear: 'D', pitch: 0, roll: 0, pv: 0, rv: 0, wheelRot: 0, slip: 0, hit: 0, accel: 0, braking: false, stopT: 0, holdT: 0, stuckT: 0, stuckP: [x, z], surf: 1, aeb: 0, gearReq: false, gearResult: null, wallPivot: 0, needRescue: false });
+    Object.assign(this, { x, z, y: this.city ? this.city.groundY(x, z, cy) : 0, yaw, vx: 0, vy: 0, w: 0, steer: 0, rpm: 800, gear: 'D', pitch: 0, roll: 0, pv: 0, rv: 0, wheelRot: 0, slip: 0, hit: 0, accel: 0, braking: false, stopT: 0, holdT: 0, stuckT: 0, stuckP: [x, z], surf: 1, aeb: 0, gearReq: false, gearResult: null, wallPivot: 0, needRescue: false, engineOn: true, isArmed: false, isT: 0, restartT: 0, cruiseV: null, bump: 0, parked: true }); // 開始・ワープ直後は最初の操作まで停止を保持（勝手にクリープで動き出さない）
     this.onReset && this.onReset(); // 表示（ギア表示・Rボタン）を実状態に合わせる
+  }
+  // クリープ用：進む向き（D=前、R=後ろ）のバンパーから1.5m以内に車・壁・柱があるか
+  frontBlocked(dir, npcs) {
+    const c = Math.cos(this.yaw), s = Math.sin(this.yaw), fx = s * dir, fz = c * dir, hl = MIRA.L / 2;
+    for (const d of [0.4, 1.0, 1.5]) for (const lx of [-0.6, 0, 0.6]) {
+      const px = this.x + fx * (hl + d) + c * lx, pz = this.z + fz * (hl + d) - s * lx;
+      for (const b of this.city.query(px, pz, 1)) { if (b.kind === 'x' || this.y + 1.3 < b.y0 || this.y + 0.35 > b.y1) continue; if (b.nb != null && !this.city.shopCarsOn(b.nb, this.hour ?? 12)) continue; if (px > b.x0 && px < b.x1 && pz > b.z0 && pz < b.z1) return true; }
+      for (const n of npcs || []) { const dx = px - n.x, dz = pz - n.z; if (dx * dx + dz * dz > 100) continue; const cy = Math.cos(n.yaw), sy = Math.sin(n.yaw), ll = dx * sy + dz * cy, lt = dx * cy - dz * sy; if (Math.abs(ll) < n.m.L / 2 + 0.1 && Math.abs(lt) < n.m.W / 2 + 0.1) return true; }
+    }
+    return false;
   }
   get speed() { return Math.hypot(this.vx, this.vy); }
   get kmh() { return Math.abs(this.vx) * 3.6; }
@@ -34,33 +44,61 @@ export class Player {
     const S = SURF[surf], mu = S.mu * (1 - 0.28 * (env.wet || 0));
     const v = this.vx;
     if (this.gearReq) { this.gearResult = Math.abs(v) < 1.0 ? 'ok' : 'ng'; if (this.gearResult === 'ok') this.gear = this.gear === 'D' ? 'R' : 'D'; this.gearReq = false; }
-    let thr = inp.thr, brk = Math.max(inp.brk, this.aeb || 0);
+    if (this.parked && (inp.thr > 0.02 || inp.brk > 0.02 || Math.abs(inp.steer) > 0.02 || this.gearReq)) this.parked = false;
+    let thr = inp.thr, brk = Math.max(inp.brk, this.aeb || 0, this.parked ? 1 : 0);
     const dir = this.gear === 'R' ? -1 : 1;
-    // ステアリング（速度感応・簡単操作向け）
-    const maxSt = 0.55 / (1 + Math.abs(v) * 0.055);
+    // ステアリング（車速感応）：停車〜低速は大きく素早く、50km/h以上はマイルドに（左右ボタンの小刻みな操作でもふらつかない）
+    const vk = Math.abs(v) / 9, maxSt = 0.55 / (1 + vk * vk * 1.4);
     const target = inp.steer * maxSt;
-    const rate = (Math.abs(target) > Math.abs(this.steer) ? 1.6 : 2.8);
+    const back = Math.abs(target) < Math.abs(this.steer) || Math.sign(target) !== Math.sign(this.steer);
+    const rate = (back ? 2.8 : 1.6) / (1 + Math.abs(v) / 12);
     this.steer += clamp(target - this.steer, -rate * dt, rate * dt);
-    // エンジン（3気筒658cc 36kW/6800rpm、CVT）
-    const P = 36000 * 0.86, Fmax = 3100;
+    // ---- パワートレイン（KF型 3気筒658cc：36kW/6800rpm・57Nm/5200rpm、CVT） ----
+    // アイドリングストップ：Dで一度10km/h以上出したあと、ブレーキで停止して1秒たつとエンジン停止。ブレーキを離すかアクセルで再始動
+    if (this.engineOn === undefined) { this.engineOn = true; this.isArmed = false; this.isT = 0; this.restartT = 0; }
+    if (Math.abs(v) * 3.6 > 10) this.isArmed = true;
+    if (this.engineOn && this.isEnabled !== false && this.isArmed && dir > 0 && Math.abs(v) < 0.05 && brk > 0.3 && thr < 0.05) { this.isT += dt; if (this.isT > 1.0) { this.engineOn = false; this.isArmed = false; this.idleStopped = true; } }
+    else this.isT = 0;
+    if (!this.engineOn && (brk < 0.3 || thr > 0.05 || this.gearReq || dir < 0)) { this.engineOn = true; this.restartT = 0.35; this.restarted = true; }
+    if (this.restartT > 0) this.restartT -= dt;
+    // 速度維持（半自動クルーズ）：目標速度に合わせてアクセル開度を自動で調整（ブレーキで解除）
+    if (this.cruiseV != null) { if (brk > 0.05 || dir < 0) this.cruiseV = null; else thr = clamp(0.22 + (this.cruiseV - v) * 0.35 + Math.max(0, this.slope || 0) * 2.5, 0, 0.95); }
+    // 制限速度リミッター（ONのとき）：制限速度を超えないよう出力を絞る（下り坂で超えた分は絞ったまま緩やかに戻る）
+    this.limitV = null;
+    if (this.limiter && this.city.limitAt) { const l = this.city.limitAt(this.x, this.z); if (l) { this.limitV = l.lim / 3.6; } }
+    const T_TQ = [[0, 30], [800, 38], [1500, 45], [2500, 51], [3500, 54.5], [4500, 56.5], [5200, 57], [6000, 55], [6800, 50.5], [7300, 42]];
+    const tq = r => { for (let i = 1; i < T_TQ.length; i++) if (r <= T_TQ[i][0]) { const a = T_TQ[i - 1], b = T_TQ[i], t = (r - a[0]) / (b[0] - a[0]); return a[1] + (b[1] - a[1]) * t; } return 40; };
+    const kmhNow = Math.abs(v) * 3.6;
+    const eng = this.engineOn && this.restartT <= 0;
+    // CVT：アクセル開度と車速から目標回転数を決め、回転は先に上がって速度が後からついてくる（ラバーバンド感）
+    const cruiseR = 1050 + kmhNow * 15.5, wot = 5300 + Math.min(1, kmhNow / 70) * 1200;
+    let rT = !eng ? 0 : thr < 0.02 ? (kmhNow < 3 ? 800 + (this.ac ? 150 : 0) : 900 + kmhNow * 13) : cruiseR + (wot - cruiseR) * Math.pow(thr, 1.25);
+    this.rpm += (rT - this.rpm) * Math.min(1, dt * (rT > this.rpm ? (thr > 0.6 ? 7 : 4) : 2.5));
+    const thrE = Math.pow(Math.min(1, thr * 1.3), 0.7); // 開度→エンジン出力の割合（半開でも7割強：軽い車体でスッと出る）
+    const Pe = eng ? tq(Math.max(900, this.rpm)) * Math.max(900, this.rpm) * Math.PI / 30 * thrE : 0;
+    const Pac = this.ac && eng ? 1600 : 0, eta = 0.82;
+    const Pw = Math.max(0, Pe - Pac) * eta;
     let Fdrive = 0;
     if (thr > 0) {
       if (dir > 0 && v < -0.3) { brk = Math.max(brk, thr); thr = 0; }
       else if (dir < 0 && v > 0.3) { brk = Math.max(brk, thr); thr = 0; }
-      else Fdrive = dir * thr * Math.min(Fmax, P / Math.max(Math.abs(v), 2.5));
+      else Fdrive = dir * Math.min(2650 * thrE, Pw / Math.max(Math.abs(v), 2.2)); // 低速は発進時の駆動力（CVTの大きな変速比）で頭打ち
       if (dir < 0) Fdrive = clamp(Fdrive, -1400, 0);
       // 速度の目安（千葉指示）：草地・砂利の農道は約50km/h、住宅街は約70km/h でアクセルが効かなくなる（ブレーキはかけない）
-      const cap = (surf === 0 || surf === 3) ? 50 / 3.6 : this.zoneCap || 0;
+      let cap = (surf === 0 || surf === 3) ? 50 / 3.6 : this.zoneCap || 0;
+      if (this.limitV && dir > 0) cap = cap ? Math.min(cap, this.limitV) : this.limitV;
       if (cap && Math.abs(v) > cap - 1.5) Fdrive *= clamp((cap - Math.abs(v)) / 1.5, 0, 1);
     }
-    // クリープ：ブレーキを離しているときだけ（AT/CVT車の挙動）
-    const creep = thr < 0.05 && brk < 0.05;
-    if (creep && Math.abs(v) < 1.6) Fdrive = dir * 300;
+    // クリープ：D/Rでペダルを離すと6〜8km/hでゆっくり進む。前（後退中は後ろ）1.5m以内に障害物があれば止まる
+    const creep = eng && thr < 0.05 && brk < 0.05;
+    this.creepBlocked = false;
+    if (creep) { const cv = 7 / 3.6, sv = v * dir; if (this.frontBlocked && this.frontBlocked(dir, npcs)) { this.creepBlocked = true; brk = Math.max(brk, 0.4); } else if (sv < cv + 0.3) Fdrive = dir * clamp((cv - sv) * 950, 0, 640); }
     if (dir > 0 && v * 3.6 > 140) Fdrive = Math.min(Fdrive, 0); // リミッター
     if (dir < 0 && v < -6) Fdrive = 0;
-    const Frr = S.rr * this.m * g * Math.sign(v), Fdrag = (0.5 * 1.2 * 0.32 * 1.95 + S.drag) * v * Math.abs(v);
+    this.thrUsed = thr; this.ecoNow = eng && thr > 0.02 && thr <= 0.4 && kmhNow > 3 && (this.accel || 0) < 1.6;
+    const Frr = S.rr * (1 + Math.abs(v) / 40) * this.m * g * Math.sign(v), Fdrag = (0.5 * 1.2 * 0.36 * 1.95 + S.drag) * v * Math.abs(v); // 速度が上がるほど転がり抵抗も増える
     const Fbrk = brk * this.m * g * 0.75 * Math.min(1, mu / 0.9); // 乾燥時最大0.75g。雨は摩擦側だけで低下
-    const Feb = thr < 0.05 ? 260 * Math.sign(v) * Math.min(1, Math.abs(v) / 3) : 0;
+    const Feb = thr < 0.05 && Math.abs(v) > 2.6 ? 260 * Math.sign(v) * Math.min(1, (Math.abs(v) - 2.6) / 3) : 0; // エンジンブレーキ（クリープ速度以下では効かない）
     // タイヤ横力：低速では速度に応じて弱め、運動学モデルに任せる（後退旋回で固まる不具合の修正）
     const lowK = clamp((Math.abs(v) - 0.5) / 2.5, 0, 1);
     const vxa = Math.max(Math.abs(v), 1.0);
@@ -112,11 +150,8 @@ export class Player {
     this.rv += (-kp * (this.roll - clamp(latA * 0.006, -0.06, 0.06)) - cp * this.rv) * dt; this.roll += this.rv * dt;
     this.wheelRot += this.vx * dt / MIRA.r;
     const gy = this.city.groundY(this.x, this.z, this.y + 0.5); this.y += (gy - this.y) * Math.min(1, dt * 12);
-    const kmh = Math.abs(this.vx) * 3.6;
-    let rt = kmh < 1 ? 800 + thr * 1800 : Math.max(1100 + kmh * 22, 1500 + thr * (2600 + kmh * 28));
-    if (thr < 0.05 && kmh > 5) rt = 1000 + kmh * 18;
-    rt = Math.min(rt, 6800);
-    this.rpm += (rt - this.rpm) * Math.min(1, dt * 4);
+    // 段差の突き上げ：接地高さが短い距離で急に変わったら車体を揺らして音を出す
+    { const dy = gy - (this.gyPrev ?? gy); this.gyPrev = gy; if (Math.abs(this.vx) > 1.5 && Math.abs(dy) > 0.02) { this.bump = Math.max(this.bump || 0, Math.min(1, Math.abs(dy) * 8 * Math.min(1, Math.abs(this.vx) / 8))); this.pv += -dy * 6; this.rv += (Math.random() - 0.5) * dy * 8; } }
     // ブレーキランプ：ブレーキ入力中か、完全停止直後1秒だけ
     if (Math.abs(this.vx) < 0.05) this.stopT += dt; else this.stopT = 0;
     this.braking = brk > 0.05 || (this.stopT > 0 && this.stopT < 1);
@@ -191,9 +226,9 @@ export class Player {
     for (const n0 of npcs) { if (n0.m.semi && n0.tr) { const S = n0.m.semi; parts.push({ x: n0.tr.x, z: n0.tr.z, yaw: n0.tr.yaw, y: n0.y, m: { L: S.tL, W: n0.m.W }, src: n0 }, { x: n0.trl.x, z: n0.trl.z, yaw: n0.trl.yaw, y: n0.y, m: { L: S.kL, W: n0.m.W }, src: n0 }); } else parts.push(n0); }
     for (const n of parts) {
       const dx = n.x - this.x, dz = n.z - this.z;
-      if (dx * dx + dz * dz > (n.tram ? 196 : n.m.L > 9 ? 100 : 49) || Math.abs((n.y || 0) - this.y) > 3) continue;
+      if (dx * dx + dz * dz > (n.m.L > 9 ? 100 : 49) || Math.abs((n.y || 0) - this.y) > 3) continue;
       const nc = Math.cos(n.yaw), ns = Math.sin(n.yaw), nl = n.m.L / 2 - n.m.W / 2, nr = n.m.W / 2;
-      const bs = n.tram ? [-nl, -nl * 0.66, -nl * 0.33, 0, nl * 0.33, nl * 0.66, nl] : n.m.L > 7 ? [-nl, -nl * 0.66, -nl * 0.33, 0, nl * 0.33, nl * 0.66, nl] : [-nl, 0, nl];
+      const bs = n.m.L > 7 ? [-nl, -nl * 0.66, -nl * 0.33, 0, nl * 0.33, nl * 0.66, nl] : [-nl, 0, nl];
       let deep = 0, px0 = 0, pz0 = 0;
       for (const a of [-1.1, 0, 1.1]) {
         const px = this.x + s * a, pz = this.z + c * a;
