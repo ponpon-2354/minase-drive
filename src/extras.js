@@ -2,7 +2,7 @@
 // 桜並木、墓地、工事現場、建築中・解体中の家、公園の小物、電話ボックス・案内図・掲示板・駐輪場、雑草・落ち葉、水たまり、
 // 歩行者用信号、建物の影・遠景シルエット用データ
 import { L } from './textures.js';
-import { rng } from './math.js';
+import { rng, clamp } from './math.js';
 import { MODELS, pickModel, pickColor } from './carmodels.js';
 
 const GRASS = { c: [0.5, 0.62, 0.36], lay: 0 };
@@ -63,6 +63,10 @@ export function farmV4(city, r, R, opt = {}) {
     if (kind === 'vinyl') vinylN++;
     kinds.push([f, kind]); F.fields++; if (kind === 'water') F.water++;
   }
+  // 田園ワープの近く（出現地点から1分以内）には茶畑・果樹園・ビニールハウスを必ず置く
+  const WP = [-998, 1300], dR = (q) => Math.hypot(Math.max(q.x0 - WP[0], 0, WP[0] - q.x1), Math.max(q.z0 - WP[1], 0, WP[1] - q.z1));
+  const near = dR(r) < 80;
+  if (near) { const order = kinds.map((k, i) => [i, Math.hypot((k[0].x0 + k[0].x1) / 2 - WP[0], (k[0].z0 + k[0].z1) / 2 - WP[1])]).sort((a, b) => a[1] - b[1]); ['tea', 'orchard', 'vinyl', 'water'].forEach((kd, j) => { if (order[j]) kinds[order[j][0]][1] = kd; }); F.showcase = (F.showcase || 0) + 1; }
   // 描画はブロック単位でまとめる
   const groups = new Map();
   for (const it of kinds) { const [f] = it, key = Math.floor((f.x0 + f.x1) / 250) + ',' + Math.floor((f.z0 + f.z1) / 250); if (!groups.has(key)) groups.set(key, []); groups.get(key).push(it); }
@@ -115,7 +119,8 @@ export function farmV4(city, r, R, opt = {}) {
   });
   }
   // 軽トラックが農道を巡回（周回ルート）
-  if (xs.length > 2 && zs.length > 2 && F.loops < 5 && R() < 0.7) {
+  if (near && xs.length > 2) { const fz = kinds.length ? kinds.map(k => k[0]).sort((a, b) => Math.hypot((a.x0 + a.x1) / 2 - WP[0], (a.z0 + a.z1) / 2 - WP[1]) - Math.hypot((b.x0 + b.x1) / 2 - WP[0], (b.z0 + b.z1) / 2 - WP[1]))[0] : null; if (fz) { const tx = WP[0] < fz.x0 ? fz.x0 + 5 : fz.x1 - 5, tz = clamp(WP[1], fz.z0 + 4, fz.z1 - 4); city.addBox(tx - 1, tz - 1.2, tx + 1, tz + 1.2, 'p'); city.add(tx, tz, g => tractor(g.det, tx, tz, 1.2)); F.tractorNearWarp = [tx, tz]; } }
+  if (xs.length > 2 && zs.length > 2 && F.loops < 6 && (near || R() < 0.7)) {
     const x0 = xs[1] - 1, x1 = xs[2] ? Math.min(xs[2], r.x1 - 3) - 1 : r.x1 - 4, z0 = zs[1] - 1, z1 = zs[2] ? Math.min(zs[2], r.z1 - 3) - 1 : r.z1 - 4;
     if (x1 - x0 > 40 && z1 - z0 > 40) {
       const pts = [], rr = 4, corner = (cx, cz, a0) => { for (let k = 0; k <= 4; k++) { const a = a0 + k / 4 * Math.PI / 2; pts.push([cx + Math.cos(a) * rr, cz + Math.sin(a) * rr]); } };
@@ -238,11 +243,13 @@ export function townExtras(city) {
       const e = city.edges[eid]; if (!e.straight) continue;
       const d = e.dEnd, left = [d[1], -d[0]], ext = e.axis === 'ns' ? n.hz : n.hx;
       // この道を渡る横断歩道（停止線の先）の歩道側の端：歩行者は道路と直交方向に渡る → 交差道路の信号と同じ位相
-      const px = n.x - d[0] * (ext + 2.5) + left[0] * (e.sp.hw + 0.6), pz = n.z - d[1] * (ext + 2.5) + left[1] * (e.sp.hw + 0.6);
-      if (!ok(px, pz, 0.3)) continue;
-      city.pedHeads.push({ node: n, axis: e.axis === 'ns' ? 'ew' : 'ns', x: px, z: pz, yaw: Math.atan2(-left[0], -left[1]) });
-      city.addBox(px - 0.1, pz - 0.1, px + 0.1, pz + 0.1, 'p');
-      city.add(px, pz, g => { g.det.cyl(px, 0, pz, 0.07, 3.0, 6, { c: [0.55, 0.56, 0.55] }); });
+      for (const sg of [1, -1]) { // 横断歩道の両端に1基ずつ（向かい側を向く）
+        const px = n.x - d[0] * (ext + 2.5) + sg * left[0] * (e.sp.hw + 0.6), pz = n.z - d[1] * (ext + 2.5) + sg * left[1] * (e.sp.hw + 0.6);
+        if (!ok(px, pz, 0.3)) continue;
+        city.pedHeads.push({ node: n, axis: e.axis === 'ns' ? 'ew' : 'ns', x: px, z: pz, yaw: Math.atan2(-left[0] * sg, -left[1] * sg) });
+        city.addBox(px - 0.1, pz - 0.1, px + 0.1, pz + 0.1, 'p');
+        city.add(px, pz, g => { g.det.cyl(px, 0, pz, 0.07, 3.0, 6, { c: [0.55, 0.56, 0.55] }); });
+      }
     }
   }
   st.pedSignals = city.pedHeads.length;

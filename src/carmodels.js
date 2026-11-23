@@ -95,6 +95,7 @@ const DEFS = [
   ['大型トラック(10t)', '日野等', 'trk', { L: 11.9, W: 2.49, H: 2.95, boxH: 3.75, wb: 6.0, cab: 2.2, belt: 2.0, hood: 1.9, ws: 0.1, wsT: 0.4, r: 0.53, plate: 'w', body: 'box', axles: 3, perf: [0.9, 24, 0.7], w: 0.18 }, 'W G LB S'],
   ['タンクローリー', '日野等', 'trk', { L: 8.4, W: 2.3, H: 2.6, boxH: 2.95, wb: 4.6, cab: 1.85, belt: 1.75, hood: 1.65, ws: 0.1, wsT: 0.42, r: 0.48, plate: 'w', body: 'tank', perf: [1.1, 24, 0.7], w: 0.12 }, 'W S LB G'],
   ['ダンプカー', '三菱ふそう等', 'trk', { L: 7.6, W: 2.3, H: 2.6, boxH: 2.75, wb: 4.2, cab: 1.85, belt: 1.75, hood: 1.65, ws: 0.1, wsT: 0.42, r: 0.5, plate: 'w', body: 'dump', perf: [1.1, 24, 0.7], w: 0.18 }, 'W G LB KH'],
+  ['セミトレーラー(バン)', '架空', 'trk', { L: 16.5, W: 2.49, H: 2.95, boxH: 4.0, wb: 3.6, cab: 2.2, belt: 2.0, hood: 1.9, ws: 0.1, wsT: 0.4, r: 0.53, plate: 'w', body: 'tractor', axles: 3, perf: [0.75, 22, 0.6], w: 0.06, semi: { tL: 6.0, kL: 13.0, kf: 1.0, kwb: 9.6 } }, 'W G LB S'],
   ['宅配トラック(2tロング)', 'いすゞ等', 'trk', { L: 6.2, W: 1.9, H: 2.2, boxH: 2.95, wb: 3.4, cab: 1.7, belt: 1.45, hood: 1.4, ws: 0.12, wsT: 0.5, r: 0.38, plate: 'w', body: 'box', perf: [1.3, 26, 0.8], w: 0.3 }, 'W S LB G']
 ];
 
@@ -111,11 +112,15 @@ export const VARIATIONS = MODELS.reduce((a, m) => a + m.colors.length, 0);
 export const CAT_NAMES = { kei: '軽自動車', sh: '軽スーパーハイトワゴン', cmp: 'コンパクトカー', sed: 'セダン', mv: 'ミニバン', suv: 'SUV', wag: 'ステーションワゴン', van: '商用バン', trk: 'トラック' };
 
 // truckK：トラックの出現倍率（工業団地・国道・バイパスで上げる）
-export function pickModel(R, truckK = 1) {
-  const w = m => m.w * (m.cat === 'trk' && m.L > 4 ? truckK : 1);
+export function pickModel(R, truckK = 1, semi = false) {
+  const w = m => m.semi && !semi ? 0 : m.w * (m.cat === 'trk' && m.L > 4 ? truckK : 1);
   let t = 0; for (const m of MODELS) t += w(m); let x = R() * t;
   for (const m of MODELS) { x -= w(m); if (x <= 0) return m; } return MODELS[0];
 }
+// 乗用車／商用車の区別（軽トラは乗用扱い＝個人の足として多い。トラック・配送バン・タンク車・ダンプは商用）
+export function isCommercial(m) { return (m.cat === 'trk' && m.L > 4.2) || !!m.body || /ハイエース|キャラバン|プロボックス|カーゴ|エブリイ/.test(m.name); }
+export function pickPassenger(R) { for (let i = 0; i < 30; i++) { const m = pickModel(R, 0.3); if (!isCommercial(m) && m.L < 5.6) return m; } return MODELS[0]; }
+export function pickCommercial(R) { const list = MODELS.filter(m => isCommercial(m) && !m.semi); let t = 0; for (const m of list) t += m.w; let x = R() * t; for (const m of list) { x -= m.w; if (x <= 0) return m; } return list[0]; }
 // ナンバーの分類（軽乗用580・軽貨物480・普通乗用500・大型乗用300・小型貨物400・普通貨物100）
 export function plateClass(m) {
   if (m.plate === 'k') return (m.cat === 'trk' || m.cargo) ? 'k480' : 'k580';
@@ -188,7 +193,9 @@ export function buildHull(p, gb, opt = {}) {
   const roofC = p.two ? { c: p.cat === 'kei' && /N-ONE/.test(p.name) ? [0.1, 0.1, 0.11] : [0.94, 0.94, 0.92] } : paint;
   const black = { c: [0.05, 0.05, 0.06] }, under = { c: [0.08, 0.08, 0.09] }, glass = { c: [0.12, 0.15, 0.19] };
   const tum = box ? 0.05 : p.cat === 'suv' ? 0.09 : 0.12;
-  const secs = lod === 2 ? G.S.filter(s => s[4] >= 2) : lod ? G.S.filter(s => s[4]) : G.S;
+  let secs = lod === 2 ? G.S.filter(s => s[4] >= 2) : lod ? G.S.filter(s => s[4]) : G.S;
+  // v0.5 高ポリ化（近距離用 lod 0）：隣り合う断面の間に、少し膨らませた中間断面を入れて面の流れを滑らかにする
+  if (lod === 0) { const out = []; for (let i = 0; i < secs.length; i++) { out.push(secs[i]); const a = secs[i], b = secs[i + 1]; if (b && b[0] - a[0] > 0.12) out.push([(a[0] + b[0]) / 2, Math.max(a[1], b[1]) * 0.997 + Math.min(a[1], b[1]) * 0.003 + (Math.abs(a[1] - b[1]) < 0.02 ? 0.004 : 0), (a[2] + b[2]) / 2, (a[3] + b[3]) / 2 + Math.abs(a[3] - b[3]) * 0.12, 0]); } secs = out; }
   const pts = secs.map(s => hullSecPts(s[1], s[2], belt, s[3], H, tum));
   const use = lod === 2 ? [1, 3, 5, 6, 7, 8] : [0, 1, 2, 3, 4, 5, 6, 7, 8];
   const zB = zW - (zW - zRt) * (p.cat === 'sh' || p.cat === 'mv' || p.slide ? 0.36 : 0.45);
@@ -213,8 +220,13 @@ export function buildHull(p, gb, opt = {}) {
     for (let u = 0; u < use.length - 1; u++) {
       const a0 = use[u], a1 = use[u + 1], o = band(a0, zm);
       for (const s of [1, -1]) {
-        const q0 = [s * A[a0][0], A[a0][1], z0], q1 = [s * A[a1][0], A[a1][1], z0], q2 = [s * B[a1][0], B[a1][1], z1], q3 = [s * B[a0][0], B[a0][1], z1];
-        gb.tri(q0, q1, q2, o, [0, 0], [0, 0], [0, 0], hint); gb.tri(q0, q2, q3, o, [0, 0], [0, 0], [0, 0], hint);
+        // 近距離（lod 0）は断面の各辺を3分割し、外側へわずかに膨らませる（面取り・ボディ側面の丸み）
+        const ns = lod === 0 && a0 > 0 ? 3 : 1, P = (Q, t) => { const fe = (Q === A && i === 0) || (Q === B && i + 1 === secs.length - 1) ? 0 : 1; const x = Q[a0][0] + (Q[a1][0] - Q[a0][0]) * t, y = Q[a0][1] + (Q[a1][1] - Q[a0][1]) * t, bl = Math.sin(Math.PI * t) * Math.hypot(Q[a1][0] - Q[a0][0], Q[a1][1] - Q[a0][1]) * 0.05 * fe; return [s * (x + bl * (a0 < 5 ? 1 : 0.5)), y + bl * (a0 >= 5 ? 0.6 : 0)]; }; // 前後の端の断面は膨らませない（端面とすき間ができないように）
+        for (let k = 0; k < ns; k++) {
+          const ta = k / ns, tb = (k + 1) / ns, pa = P(A, ta), pb = P(A, tb), qa = P(B, ta), qb = P(B, tb);
+          const q0 = [pa[0], pa[1], z0], q1 = [pb[0], pb[1], z0], q2 = [qb[0], qb[1], z1], q3 = [qa[0], qa[1], z1];
+          gb.tri(q0, q1, q2, o, [0, 0], [0, 0], [0, 0], hint); gb.tri(q0, q2, q3, o, [0, 0], [0, 0], [0, 0], hint);
+        }
       }
     }
   }
@@ -277,10 +289,16 @@ export function buildHull(p, gb, opt = {}) {
     const bedY = p.r * 2 + 0.12;
     gb.box(-Wh, bedY - 0.12, -Lh, Wh, bedY, zR - 0.04, { c: [0.25, 0.25, 0.26] });
     if (lod < 2) gb.box(-Wh + 0.1, bedY - 0.38, -Lh + 0.2, Wh - 0.1, bedY - 0.12, zR - 0.3, black);
+    if (p.body === 'tractor') { // トラクタ（けん引車）：荷台の代わりに第五輪（カプラー）と燃料タンク・エアタンク
+      gb.cyl(0, bedY, -Lh + (zR + Lh) * 0.45, 0.62, 0.12, lod ? 8 : 16, { c: [0.15, 0.15, 0.16] });
+      for (const sg of [1, -1]) gb.cylX(sg * (Wh - 0.25), bedY - 0.45, zR - 0.6, 0.28, 0.5, lod ? 6 : 12, { c: [0.75, 0.77, 0.8] });
+      gb.box(-Wh * 0.5, bedY, zR - 0.35, Wh * 0.5, H - 0.4, zR - 0.15, { c: [0.2, 0.2, 0.2] }); // 背面のエアホース掛け
+    } else {
     gb.box(-Wh, bedY, -Lh, Wh, bedY + 0.32, -Lh + 0.04, paint);
     gb.box(-Wh, bedY, -Lh, -Wh + 0.04, bedY + 0.32, zR - 0.06, paint);
     gb.box(Wh - 0.04, bedY, -Lh, Wh, bedY + 0.32, zR - 0.06, paint);
     gb.box(-Wh, bedY, zR - 0.1, Wh, H - 0.1, zR - 0.05, { c: [0.2, 0.2, 0.2] }); // 鳥居（キャブ保護枠）
+    }
     for (const s of [1, -1]) q(s > 0 ? Wh - 0.25 : -Wh + 0.05, bedY - 0.32, s > 0 ? Wh - 0.05 : -Wh + 0.25, bedY - 0.14, -Lh - 0.004, { c: [0.82, 0.05, 0.06], mat: 4 }, -1);
     q(-0.165, bedY - 0.34, 0.165, bedY - 0.175, -Lh - 0.006, PO, -1, puv(true));
     // 荷台の種類（中・大型トラック）
@@ -308,7 +326,7 @@ export function buildHull(p, gb, opt = {}) {
   const axles = p.axles === 3 ? [zf, zr + 0.65, zr - 0.65] : [zf, zr];
   const sideX = Wh + 0.003;
   for (const z of axles) for (const s of [1, -1]) {
-    const ra = r + 0.055, n = lod === 2 ? 2 : lod ? 4 : 8;
+    const ra = r + 0.055, n = lod === 2 ? 2 : lod ? 6 : 14; // ホイールアーチの丸み
     for (let k = 0; k < n; k++) { const a0 = Math.PI * k / n, a1 = Math.PI * (k + 1) / n; gb.tri([s * sideX, r, z], [s * sideX, r + Math.sin(a0) * ra, z + Math.cos(a0) * ra], [s * sideX, r + Math.sin(a1) * ra, z + Math.cos(a1) * ra], black, [0, 0], [0, 0], [0, 0], [0, r, z]); }
     gb.quadN([s * sideX, 0.1, z - ra], [s * sideX, 0.1, z + ra], [s * sideX, r, z + ra], [s * sideX, r, z - ra], [s, 0, 0], black);
   }
@@ -331,7 +349,7 @@ export function buildHull(p, gb, opt = {}) {
   return G;
 }
 function hullWheel(gb, x, y, z, r, side, lod, alloy) {
-  const w = 0.16, seg = lod === 2 ? 5 : lod ? 8 : 12;
+  const w = 0.16, seg = lod === 2 ? 6 : lod ? 12 : 20; // タイヤを円らしく
   gb.cylX(x, y, z, r, w, seg, { c: TIRE }, lod === 0, { c: TIRE });
   if (lod === 2) return;
   const fx = x + side * (w / 2 + 0.003), rim = alloy ? [0.78, 0.79, 0.81] : [0.55, 0.56, 0.58];
@@ -449,50 +467,62 @@ export function wheel(gb, x, y, z, r, lod, side, p) {
 
 // ===== ミライース（LA350S型を参考）：断面を前後方向につないだローポリ車体 =====
 // 断面：[z, 半幅, 下端, ベルトライン, 上端]
+// v0.5.2 現行型（3代目・LA350S）を参考に再設計：
+//  ・ルーフは後ろまでほぼ水平（1500mm）で、リアゲートのガラスは寝かせ気味、その下のバックドアは立てる
+//  ・サイドウインドウの下端（ベルトライン）はリアドアの後端でクイッと跳ね上がり、太いCピラーにつながる
+//  ・前輪の上から後ろのランプへ向かって上がっていくキャラクターライン（面の折れ）
+//  ・短く傾斜したボンネットと、低めの丸いノーズ
 const MIRA_SEC = [
-  [-1.6975, 0.66, 0.30, 0.96, 0.975], [-1.675, 0.70, 0.25, 0.97, 1.02], [-1.62, 0.725, 0.21, 0.98, 1.22], [-1.54, 0.735, 0.185, 0.98, 1.41],
-  [-1.47, 0.7375, 0.175, 0.98, 1.485], [-1.2, 0.7375, 0.17, 0.98, 1.5], [-0.6, 0.7375, 0.17, 0.975, 1.5], [0.0, 0.7375, 0.17, 0.97, 1.5],
-  [0.12, 0.7375, 0.17, 0.97, 1.485], [0.32, 0.735, 0.17, 0.97, 1.31], [0.52, 0.735, 0.175, 0.97, 1.13], [0.70, 0.733, 0.18, 0.97, 0.985],
-  [0.74, 0.732, 0.18, 0.97, 0.955], [1.1, 0.728, 0.19, 0.97, 0.9], [1.4, 0.715, 0.21, 0.97, 0.84], [1.56, 0.69, 0.25, 0.97, 0.785],
-  [1.65, 0.645, 0.29, 0.97, 0.71], [1.6975, 0.585, 0.32, 0.97, 0.625]
+  [-1.6975, 0.64, 0.33, 0.98, 0.96], [-1.685, 0.69, 0.27, 0.99, 1.02], [-1.655, 0.718, 0.22, 1.0, 1.12], [-1.60, 0.73, 0.19, 1.02, 1.26],
+  [-1.53, 0.734, 0.178, 1.04, 1.385], [-1.46, 0.736, 0.172, 1.045, 1.462], [-1.32, 0.7375, 0.17, 1.04, 1.482], [-1.22, 0.7375, 0.17, 0.985, 1.49],
+  [-0.9, 0.7375, 0.17, 0.968, 1.497], [-0.4, 0.7375, 0.17, 0.955, 1.5], [0.0, 0.7375, 0.17, 0.947, 1.497], [0.12, 0.7375, 0.17, 0.945, 1.478],
+  [0.32, 0.736, 0.17, 0.94, 1.32], [0.52, 0.735, 0.172, 0.935, 1.15], [0.70, 0.733, 0.176, 0.93, 0.99], [0.74, 0.732, 0.178, 0.96, 0.958],
+  [1.0, 0.729, 0.185, 0.96, 0.92], [1.25, 0.722, 0.195, 0.96, 0.878], [1.45, 0.705, 0.215, 0.96, 0.835], [1.57, 0.677, 0.245, 0.96, 0.795],
+  [1.65, 0.632, 0.285, 0.96, 0.745], [1.6975, 0.57, 0.33, 0.96, 0.665]
 ];
 function miraSection([z, hw, yb, belt, top]) {
   const t = clamp((top - belt) / (1.5 - belt), 0, 1);
-  const p4y = Math.min(belt - 0.04, top - 0.03), p3y = Math.min(0.6, p4y - 0.05), p2y = Math.min(yb + 0.17, p3y - 0.05);
-  const P = [[0, yb], [hw * 0.92, yb], [hw, p2y], [hw * 1.0, p3y], [hw * 0.985, p4y], [hw * 0.95, Math.min(belt, top)]];
+  const cl = 0.745 + clamp((1.45 - z) / 3.1, 0, 1) * 0.15; // キャラクターライン（前から後ろへ上がる）
+  const p4y = Math.min(belt - 0.04, top - 0.03), p3y = Math.min(cl, p4y - 0.05), p2y = Math.min(yb + 0.17, p3y - 0.05);
+  const P = [[0, yb], [hw * 0.92, yb], [hw * 0.993, p2y], [hw, p3y], [hw * 0.972, p4y], [hw * 0.95, Math.min(belt, top)]];
   if (top <= belt + 0.001) P.push([hw * 0.86, top + 0.004], [hw * 0.55, top + 0.012], [0, top + 0.02]);
   else P.push([hw * (0.95 - 0.12 * t), belt + (top - belt) * 0.9], [hw * (0.95 - 0.23 * t), top], [0, top + 0.012]);
-  void z;
   return P;
 }
 function miraBand(b, zm) {
   if (b === 0) return 'under';
   if (b <= 4) return 'paint';
   if (zm < -1.665) return 'paint';
-  if (zm < -1.49) return b === 5 ? 'paint' : 'glass';
-  if (zm < 0.12) { if (b >= 6) return 'paint'; if (zm < -1.2) return 'paint'; if (zm > -0.8 && zm < -0.66) return 'black'; return 'glass'; }
-  if (zm < 0.72) return 'glass';
+  if (zm < -1.46) return b === 5 ? 'paint' : 'glass'; // リアゲートのガラス（両脇はDピラー）
+  if (zm < -1.3) return 'paint'; // 太いCピラー
+  if (zm < 0.12) { if (b >= 6) return 'paint'; if (zm > -0.8 && zm < -0.66) return 'black'; return 'glass'; } // サイドウインドウ（Bピラーは黒）
+  if (zm < 0.70) return 'glass'; // フロントガラス
   return 'paint';
 }
 export function buildMira(gb, glassGB, opt = {}) {
   const paint = opt.paint ? { c: opt.paint, mat: 0 } : { c: [1, 1, 1], mat: 1 };
   const black = { c: [0.05, 0.05, 0.06] }, under = { c: [0.08, 0.08, 0.09] }, dglass = { c: [0.12, 0.15, 0.19] };
-  const secs = MIRA_SEC.map(miraSection);
-  for (let i = 0; i < MIRA_SEC.length - 1; i++) {
-    const z0 = MIRA_SEC[i][0], z1 = MIRA_SEC[i + 1][0], zm = (z0 + z1) / 2, A = secs[i], B = secs[i + 1];
-    const hint = [0, 0.75, zm];
-    for (let b = 0; b < 8; b++) {
-      const k = miraBand(b, zm);
+  // v0.5.1 高ポリ化：断面の間に補間断面（Catmull-Rom）を入れ、各断面の輪郭も辺の中点を外側へ少し膨らませて2分割（車体の面数 約4倍）
+  const lerpSec = (i, t) => { const g = k => MIRA_SEC[Math.max(0, Math.min(MIRA_SEC.length - 1, k))]; const a = g(i - 1), b = g(i), c = g(i + 1), d = g(i + 2), t2 = t * t, t3 = t2 * t; return b.map((_, j) => j === 0 ? b[0] + (c[0] - b[0]) * t : 0.5 * (2 * b[j] + (-a[j] + c[j]) * t + (2 * a[j] - 5 * b[j] + 4 * c[j] - d[j]) * t2 + (-a[j] + 3 * b[j] - 3 * c[j] + d[j]) * t3)); };
+  const subP = P => { const o = [P[0]]; for (let b = 0; b < P.length - 1; b++) { const A = P[b], B = P[b + 1], mx = (A[0] + B[0]) / 2, my = (A[1] + B[1]) / 2, dx = B[0] - A[0], dy = B[1] - A[1], l = Math.hypot(dx, dy) || 1; let nx = dy / l, ny = -dx / l; if (nx * mx + ny * (my - 0.75) < 0) { nx = -nx; ny = -ny; } const k = b === 0 ? 0 : 0.025 * l; o.push([Math.max(0, mx + nx * k), my + ny * k], B); } return o; };
+  const rows = [];
+  for (let i = 0; i < MIRA_SEC.length - 1; i++) { const zm = (MIRA_SEC[i][0] + MIRA_SEC[i + 1][0]) / 2; rows.push({ z: MIRA_SEC[i][0], P: subP(miraSection(MIRA_SEC[i])), zm }); const m = lerpSec(i, 0.5); rows.push({ z: m[0], P: subP(miraSection(m)), zm }); }
+  rows.push({ z: MIRA_SEC[MIRA_SEC.length - 1][0], P: subP(miraSection(MIRA_SEC[MIRA_SEC.length - 1])), zm: 9 });
+  for (let r = 0; r < rows.length - 1; r++) {
+    const z0 = rows[r].z, z1 = rows[r + 1].z, zm = rows[r].zm, A = rows[r].P, B = rows[r + 1].P;
+    const hint = [0, 0.75, (z0 + z1) / 2];
+    for (let sb = 0; sb < A.length - 1; sb++) {
+      const k = miraBand(sb >> 1, zm);
       for (const s of [1, -1]) {
-        const p0 = [s * A[b][0], A[b][1], z0], p1 = [s * A[b + 1][0], A[b + 1][1], z0], p2 = [s * B[b + 1][0], B[b + 1][1], z1], p3 = [s * B[b][0], B[b][1], z1];
+        const p0 = [s * A[sb][0], A[sb][1], z0], p1 = [s * A[sb + 1][0], A[sb + 1][1], z0], p2 = [s * B[sb + 1][0], B[sb + 1][1], z1], p3 = [s * B[sb][0], B[sb][1], z1];
         if (k === 'glass' && glassGB) { glassGB.tri(p0, p1, p2, { c: [0.3, 0.36, 0.42] }, [0, 0], [0, 0], [0, 0], hint); glassGB.tri(p0, p2, p3, { c: [0.3, 0.36, 0.42] }, [0, 0], [0, 0], [0, 0], hint); continue; }
         const o = k === 'paint' ? paint : k === 'black' ? black : k === 'under' ? under : dglass;
         gb.tri(p0, p1, p2, o, [0, 0], [0, 0], [0, 0], hint); gb.tri(p0, p2, p3, o, [0, 0], [0, 0], [0, 0], hint);
       }
     }
   }
-  for (const [idx, z] of [[0, MIRA_SEC[0][0]], [MIRA_SEC.length - 1, MIRA_SEC[MIRA_SEC.length - 1][0]]]) {
-    const P = secs[idx], c = [0, 0.6, z], hint = [0, 0.6, z - Math.sign(z)];
+  for (const row of [rows[0], rows[rows.length - 1]]) {
+    const P = row.P, z = row.z, c = [0, 0.6, z], hint = [0, 0.6, z - Math.sign(z)];
     for (let b = 0; b < P.length - 1; b++) for (const s of [1, -1]) gb.tri(c, [s * P[b][0], P[b][1], z], [s * P[b + 1][0], P[b + 1][1], z], paint, [0, 0], [0, 0], [0, 0], hint);
   }
   const ZF = 1.6975, ZR = -1.6975;
@@ -512,7 +542,7 @@ export function buildMira(gb, glassGB, opt = {}) {
   // ヘッドライト：黒いハウジング＋レンズ内のメッキ反射面＋プロジェクター＋上縁のポジションランプ＋内蔵ウインカー
   for (const sg of [1, -1]) {
     const S = v => [v[0] * sg, v[1], v[2]];
-    const hs = [[0.25, 0.612, 1.704], [0.6, 0.632, 1.664], [0.705, 0.768, 1.552], [0.325, 0.752, 1.65]].map(S); // ハウジング外形（内側が低く、外側へ吊り上がる）
+    const hs = [[0.24, 0.606, 1.705], [0.61, 0.628, 1.662], [0.692, 0.79, 1.515], [0.3, 0.765, 1.652]].map(S); // 大きく吊り上がって側面へ回り込むヘッドランプ // ハウジング外形（内側が低く、外側へ吊り上がる）
     const cen = [(hs[0][0] + hs[1][0] + hs[2][0] + hs[3][0]) / 4, (hs[0][1] + hs[1][1] + hs[2][1] + hs[3][1]) / 4, (hs[0][2] + hs[1][2] + hs[2][2] + hs[3][2]) / 4];
     const up = (v, d) => [v[0] + sg * 0.004 * d, v[1] + 0.004 * d, v[2] + 0.006 * d];
     H4(...hs.map(v => up(v, 1)), { c: [0.07, 0.07, 0.08] });
@@ -529,42 +559,49 @@ export function buildMira(gb, glassGB, opt = {}) {
     H4(up(lerp3(ln[1], ln[0], 0.0), 3), up(lerp3(ln[1], ln[0], 0.28), 3), up(lerp3(lerp3(ln[1], ln[0], 0.28), lerp3(ln[2], ln[3], 0.28), 0.35), 3), up(lerp3(ln[1], ln[2], 0.35), 3), { c: [1, 0.55, 0.05], mat: sg > 0 ? 10 : 11 });
   }
   // リア：縦長のコンビランプ、ナンバー、スポイラー、ハイマウントストップ、ワイパー、マフラー
-  for (const s of [1, -1]) {
-    const x0 = s * 0.47, x1 = s * 0.66;
-    gb.quadN([x0, 0.74, ZR - 0.004], [x1, 0.72, ZR - 0.004], [x1 * 1.02, 0.96, ZR - 0.004], [x0, 0.97, ZR - 0.004], [0, 0, -1], { c: [0.82, 0.05, 0.06], mat: 4 });
-    gb.quadN([x0, 0.80, ZR - 0.006], [x1, 0.79, ZR - 0.006], [x1, 0.84, ZR - 0.006], [x0, 0.85, ZR - 0.006], [0, 0, -1], { c: [1, 0.55, 0.05], mat: s > 0 ? 10 : 11 });
-    gb.quadN([x0, 0.87, ZR - 0.006], [x1, 0.86, ZR - 0.006], [x1, 0.89, ZR - 0.006], [x0, 0.9, ZR - 0.006], [0, 0, -1], { c: [0.95, 0.95, 0.95], mat: 20 });
+  for (const s of [1, -1]) { // 縦長のリアコンビランプ（バックドアの両端。側面へ回り込む）
+    const x0 = s * 0.44, x1 = s * 0.625;
+    gb.quadN([x0, 0.70, ZR - 0.004], [x1, 0.69, ZR - 0.004], [x1, 0.95, ZR - 0.004], [x0, 0.955, ZR - 0.004], [0, 0, -1], { c: [0.82, 0.05, 0.06], mat: 4 });
+    gb.quadN([x0, 0.78, ZR - 0.006], [x1, 0.775, ZR - 0.006], [x1, 0.83, ZR - 0.006], [x0, 0.835, ZR - 0.006], [0, 0, -1], { c: [1, 0.55, 0.05], mat: s > 0 ? 10 : 11 });
+    gb.quadN([x0, 0.715, ZR - 0.006], [x1, 0.705, ZR - 0.006], [x1, 0.745, ZR - 0.006], [x0, 0.75, ZR - 0.006], [0, 0, -1], { c: [0.95, 0.95, 0.95], mat: 20 });
+    gb.quadN([x0 * 1.02, 0.95, ZR - 0.005], [x1, 0.95, ZR - 0.005], [x1, 0.965, ZR - 0.005], [x0 * 1.02, 0.97, ZR - 0.005], [0, 0, -1], black);
+    // 側面への回り込み
+    const w0 = [s * 0.652, -1.692], w1 = [s * 0.728, -1.62];
+    gb.quadN([w0[0], 0.72, w0[1]], [w1[0], 0.74, w1[1]], [w1[0], 0.96, w1[1]], [w0[0], 0.955, w0[1]], [s * 0.7, 0, -0.7], { c: [0.82, 0.05, 0.06], mat: 4 });
   }
+  gb.quadN([-0.42, 0.79, ZR - 0.005], [0.42, 0.79, ZR - 0.005], [0.42, 0.8, ZR - 0.005], [-0.42, 0.8, ZR - 0.005], [0, 0, -1], { c: [0.25, 0.25, 0.27] }); // バックドアの折れ線（ナンバーの上）
+  gb.quadN([-0.2, 0.57, ZR - 0.004], [0.2, 0.57, ZR - 0.004], [0.2, 0.79, ZR - 0.004], [-0.2, 0.79, ZR - 0.004], [0, 0, -1], { c: [0.1, 0.1, 0.11] }); // ナンバー周りのくぼみ
   gb.quadN([-0.165, 0.6, ZR - 0.006], [0.165, 0.6, ZR - 0.006], [0.165, 0.765, ZR - 0.006], [-0.165, 0.765, ZR - 0.006], [0, 0, -1], { c: [1, 1, 1], lay: opt.player ? L.PLATE_ME : L.PLATE_K, mat: opt.player ? 0 : 19 }, [[1, 1], [0, 1], [0, 0], [1, 0]]);
   gb.quadN([-0.66, 0.5, ZR - 0.004], [0.66, 0.5, ZR - 0.004], [0.66, 0.515, ZR - 0.004], [-0.66, 0.515, ZR - 0.004], [0, 0, -1], black);
   gb.box(-0.55, 0.3, ZR - 0.02, 0.55, 0.38, ZR + 0.03, { c: [0.12, 0.12, 0.13] });
-  gb.box(-0.5, 1.455, -1.56, 0.5, 1.5, -1.47, paint);
-  gb.box(-0.12, 1.462, -1.565, 0.12, 1.478, -1.555, { c: [0.8, 0.05, 0.05], mat: 4 });
+  gb.box(-0.56, 1.45, -1.56, 0.56, 1.5, -1.44, paint); // ルーフスポイラー
+  gb.box(-0.14, 1.46, -1.565, 0.14, 1.48, -1.555, { c: [0.8, 0.05, 0.05], mat: 4 });
   gb.beam([0.02, 1.12, -1.604], [-0.38, 1.27, -1.56], 0.008, black);
   gb.cylX(-0.4, 0.22, ZR + 0.05, 0.03, 0.01, 6, { c: [0.25, 0.25, 0.25] });
   // ホイールアーチ
   for (const z of [MIRA._zf, MIRA._zr]) for (const s of [1, -1]) {
     const hw = 0.7375, r = MIRA.r + 0.05, cy = MIRA.r, pts = [];
-    for (let k = 0; k <= 12; k++) { const a = Math.PI * (k / 12); pts.push([cy + Math.sin(a) * r, z + Math.cos(a) * r]); }
-    for (let k = 0; k < pts.length - 1; k++) gb.tri([s * (hw + 0.003), cy, z], [s * (hw + 0.003), pts[k][0], pts[k][1]], [s * (hw + 0.003), pts[k + 1][0], pts[k + 1][1]], black, [0, 0], [0, 0], [0, 0], [0, cy, z]);
-    gb.quadN([s * (hw + 0.003), 0.12, z - r], [s * (hw + 0.003), 0.12, z + r], [s * (hw + 0.003), cy, z + r], [s * (hw + 0.003), cy, z - r], [s, 0, 0], black);
+    for (let k = 0; k <= 24; k++) { const a = Math.PI * (k / 24); pts.push([cy + Math.sin(a) * r, z + Math.cos(a) * r]); }
+    const ax = hw + 0.014; // 車体側面の膨らみ（高ポリ化）より外側に描く
+    for (let k = 0; k < pts.length - 1; k++) gb.tri([s * ax, cy, z], [s * ax, pts[k][0], pts[k][1]], [s * ax, pts[k + 1][0], pts[k + 1][1]], black, [0, 0], [0, 0], [0, 0], [0, cy, z]);
+    gb.quadN([s * ax, 0.12, z - r], [s * ax, 0.12, z + r], [s * ax, cy, z + r], [s * ax, cy, z - r], [s, 0, 0], black);
   }
   // ドアの見切り線・ドアハンドル・サイドミラー
   for (const s of [1, -1]) {
-    const x = s * 0.7395;
-    for (const [z, y0, y1] of [[0.66, 0.42, 0.97], [-0.73, 0.3, 0.975], [-1.0, 0.64, 0.98]]) gb.quadN([x, y0, z - 0.006], [x, y0, z + 0.006], [x, y1, z + 0.006], [x, y1, z - 0.006], [s, 0, 0], black);
+    const x = s * 0.7515;
+    for (const [z, y0, y1] of [[0.66, 0.42, 0.935], [-0.73, 0.3, 0.96], [-1.26, 0.64, 0.98]]) gb.quadN([x, y0, z - 0.006], [x, y0, z + 0.006], [x, y1, z + 0.006], [x, y1, z - 0.006], [s, 0, 0], black);
     gb.quadN([x, 0.3, 0.66], [x, 0.3, -0.92], [x, 0.312, -0.92], [x, 0.312, 0.66], [s, 0, 0], black);
     for (const z of [-0.45, -0.95]) gb.box(Math.min(x, x + s * 0.02), 0.83, z - 0.07, Math.max(x, x + s * 0.02), 0.86, z + 0.07, { c: [0.25, 0.25, 0.27] });
-    gb.box(Math.min(x, x + s * 0.06), 0.97, 0.5, Math.max(x, x + s * 0.06), 1.0, 0.58, black);
-    gb.box(Math.min(s * 0.77, s * 0.93), 0.99, 0.5, Math.max(s * 0.77, s * 0.93), 1.11, 0.6, paint);
-    gb.box(Math.min(s * 0.77, s * 0.93), 1.0, 0.495, Math.max(s * 0.77, s * 0.93), 1.1, 0.5, { c: [0.55, 0.62, 0.7] });
+    gb.box(Math.min(x, x + s * 0.06), 0.94, 0.5, Math.max(x, x + s * 0.06), 0.97, 0.58, black);
+    gb.box(Math.min(s * 0.77, s * 0.93), 0.96, 0.5, Math.max(s * 0.77, s * 0.93), 1.08, 0.6, paint);
+    gb.box(Math.min(s * 0.77, s * 0.93), 0.97, 0.495, Math.max(s * 0.77, s * 0.93), 1.07, 0.5, { c: [0.55, 0.62, 0.7] });
   }
 }
 // 14インチ・アルミホイール（8本スポーク）
 export function miraWheel(gb, side) {
   const r = MIRA.r, w = 0.155, x = side * (w / 2 + 0.003), sv = [0.78, 0.79, 0.81];
-  gb.cylX(0, 0, 0, r, w, 16, { c: TIRE }, true, { c: TIRE });
-  gb.cylX(x, 0, 0, r * 0.7, 0.006, 16, { c: [0.12, 0.12, 0.13] }, true);
+  gb.cylX(0, 0, 0, r, w, 24, { c: TIRE }, true, { c: TIRE });
+  gb.cylX(x, 0, 0, r * 0.7, 0.006, 24, { c: [0.12, 0.12, 0.13] }, true);
   gb.cylX(x + side * 0.004, 0, 0, 0.055, 0.01, 8, { c: sv }, true);
   for (let i = 0; i < 8; i++) {
     const a = i / 8 * Math.PI * 2;
@@ -584,7 +621,7 @@ export function buildPlayerCar() {
   const p = MIRA;
   const body = new GB(), glass = new GB(), interior = new GB(), wheelG = new GB(), wheelR = new GB(), steer = new GB(), needle = new GB();
   buildMira(body, glass, { player: true });
-  for (const s of [1, -1]) body.beam([s * 0.682, 0.975, 0.70], [s * 0.528, 1.48, 0.125], 0.028, { c: [1, 1, 1], mat: 1 }); // Aピラー
+  for (const s of [1, -1]) body.beam([s * 0.682, 0.955, 0.70], [s * 0.528, 1.48, 0.125], 0.028, { c: [1, 1, 1], mat: 1 }); // Aピラー
   body.flat(-0.79, -1.75, 0.79, 1.75, 0.05, { c: [0.05, 0.05, 0.055], mat: 5 });
   miraWheel(wheelG, 1); miraWheel(wheelR, -1);
   const Wh = p.W / 2, belt = p.belt, zW = p.L / 2 - p.ws;
@@ -627,3 +664,25 @@ export function buildPlayerCar() {
   needle.box(-0.004, 0, -0.002, 0.004, 0.07, 0.002, { c: [1, 0.3, 0.1], mat: 5 });
   return { p, body, glass, interior, wheel: wheelG, wheelR, steer, needle, driverX: dx, eye: [dx, 1.16, -0.42], wheelPos: [[-0.6665, p._zf, 1], [0.6665, p._zf, 1], [-0.6665, p._zr, 0], [0.6665, p._zr, 0]], steerPos: [dx, belt - 0.03, zW - 0.76], meterPos: [dx, belt - 0.03, zW - 0.656] };
 }
+
+// v0.5.1 セミトレーラー：トラクタ（けん引車）は buildHull に車長 tL で作り、トレーラー（バン型・後3軸）は別メッシュ。描画時に連結角を付けて並べる
+export function tractorDef(m) { return { ...m, L: m.semi.tL }; }
+export function buildTrailer(gb, m, lod = 0) {
+  const W = m.W, Wh = W / 2, L = m.semi.kL, zF = L / 2, zR = -L / 2, r = 0.5, bedY = 1.25, top = m.boxH, n = lod ? 8 : 16;
+  const wall = { c: [0.94, 0.94, 0.92], side: { lay: L_METAL(), tw: 2.4, th: top - bedY } }, dark = { c: [0.12, 0.12, 0.13] };
+  gb.box(-Wh, bedY, zR, Wh, top, zF, wall); // 荷箱
+  gb.box(-Wh + 0.3, bedY - 0.25, zR + 0.3, Wh - 0.3, bedY, zF - 0.6, dark); // 台枠
+  gb.box(-0.12, bedY - 0.35, zF - 1.1, 0.12, bedY, zF - 0.9, dark); // キングピン
+  for (const sg of [1, -1]) { // 補助脚
+    gb.box(sg * (Wh - 0.35) - 0.06, 0.12, zF - 3.2, sg * (Wh - 0.35) + 0.06, bedY - 0.25, zF - 3.05, { c: [0.3, 0.3, 0.32] });
+    gb.box(sg * (Wh - 0.35) - 0.15, 0.1, zF - 3.25, sg * (Wh - 0.35) + 0.15, 0.14, zF - 3.0, { c: [0.3, 0.3, 0.32] });
+  }
+  gb.box(-Wh, 0.35, zR + 2.8, -Wh + 0.05, bedY - 0.25, zF - 4.5, { c: [0.85, 0.85, 0.85] }); gb.box(Wh - 0.05, 0.35, zR + 2.8, Wh, bedY - 0.25, zF - 4.5, { c: [0.85, 0.85, 0.85] }); // サイドガード
+  if (lod < 2) { gb.quadN([-0.01, bedY + 0.1, zR - 0.006], [0.01, bedY + 0.1, zR - 0.006], [0.01, top - 0.1, zR - 0.006], [-0.01, top - 0.1, zR - 0.006], [0, 0, -1], dark); }
+  gb.box(-Wh, 0.45, zR - 0.05, Wh, 0.6, zR + 0.1, dark); // リアバンパー
+  for (const sg of [1, -1]) { const x0 = sg * (Wh - 0.08), x1 = sg * (Wh - 0.42); gb.quadN([Math.min(x0, x1), 0.62, zR - 0.06], [Math.max(x0, x1), 0.62, zR - 0.06], [Math.max(x0, x1), 0.8, zR - 0.06], [Math.min(x0, x1), 0.8, zR - 0.06], [0, 0, -1], { c: [0.82, 0.05, 0.06], mat: 4 }); }
+  for (const sg of [1, -1]) for (let k = 0; k < 4; k++) gb.box(sg * Wh - 0.02, bedY + 0.05, zR + 1 + k * 3.6, sg * Wh + 0.02, bedY + 0.12, zR + 1.15 + k * 3.6, { c: [1, 0.55, 0.05], mat: 8 }); // 側面のマーカー
+  for (const z of [zR + 1.2, zR + 2.5, zR + 3.8]) for (const sg of [1, -1]) gb.cylX(sg * (Wh - 0.25), r, z, r, 0.45, n, { c: [0.1, 0.1, 0.1] }, true, { c: [0.55, 0.56, 0.58] });
+  gb.flat(-Wh - 0.05, zR - 0.05, Wh + 0.05, zF + 0.05, 0.05, { c: [0.05, 0.05, 0.055], mat: 5 });
+}
+function L_METAL() { return L.METAL; }

@@ -3,7 +3,8 @@
 import { GB, hex } from './geo.js';
 import { L, plateUV, PLATES } from './textures.js';
 import { rng, clamp } from './math.js';
-import { buildHull, pickModel, pickColor, MODELS, plateClass } from './carmodels.js';
+import { buildHull, pickModel, pickColor, MODELS, plateClass, pickPassenger, pickCommercial, isCommercial } from './carmodels.js';
+import { CURVES, curvePts, inNewDistrict } from './districts.js';
 import { buildWorld } from './world.js';
 import { installProps } from './props.js';
 
@@ -17,7 +18,13 @@ const SPECS = {
   shop: { kind: 'shop', lanes: 1, lw: 3.0, sw: 3.4, lim: 30, sh: 0.3, rank: 1.5, oneway: 1, fixedHw: 2.6 },
   minor: { kind: 'minor', lanes: 1, lw: 2.75, sw: 0, lim: 30, sh: 0.25, rank: 1 },
   out: { kind: 'out', lanes: 1, lw: 3.25, sw: 0, lim: 50, sh: 0.75, rank: 2 },
-  mtn: { kind: 'mtn', lanes: 1, lw: 2.75, sw: 0, lim: 40, sh: 0.5, rank: 1 }
+  mtn: { kind: 'mtn', lanes: 1, lw: 2.75, sw: 0, lim: 40, sh: 0.5, rank: 1 },
+  // v0.5：旧路面電車通り（片側3車線＝直進2＋中央寄りは右折待ちにも使う）、学園通り（歩道が広い）、ニュータウンの道路と袋小路、旧街道
+  art3: { kind: 'art', lanes: 3, lw: 3.0, sw: 3.5, lim: 50, sh: 0.5, rank: 5, three: 1 },
+  gak: { kind: 'gak', lanes: 1, lw: 3.25, sw: 5.0, lim: 40, sh: 0.5, rank: 3 },
+  nt: { kind: 'nt', lanes: 1, lw: 3.0, sw: 2.5, lim: 30, sh: 0.5, rank: 2 },
+  ntc: { kind: 'ntc', lanes: 1, lw: 2.75, sw: 2.0, lim: 20, sh: 0.25, rank: 1 },
+  kaido: { kind: 'kaido', lanes: 1, lw: 2.75, sw: 0, lim: 30, sh: 0.25, rank: 1.5 }
 };
 export function mkSpec(kind, axis, c) {
   const s = { ...SPECS[kind], axis, c };
@@ -25,7 +32,8 @@ export function mkSpec(kind, axis, c) {
   return s;
 }
 function coreKind(axis, c) {
-  if ((axis === 'ns' && c === 0) || (axis === 'ew' && (c === 0 || c === -375))) return 'art';
+  if (axis === 'ew' && c === 0) return 'art3'; // 旧路面電車通り
+  if ((axis === 'ns' && c === 0) || (axis === 'ew' && c === -375)) return 'art';
   if (Math.abs(c) === 500) return 'ring';
   if (axis === 'ns' && c === -250) return 'shop';
   return 'minor';
@@ -94,19 +102,19 @@ export class City {
   // 少しずつ組み立てる版：締め切り時刻（ms）まで生成し、終わったら GPU へ転送して true を返す
   buildChunkStep(ch, R, deadline) {
     if (ch.m) return true;
-    const P = ch.pend || (ch.pend = { g: { s: new GB(), det: new GB(), d1: new GB(), d2: new GB(), glow: new GB(), lines: new GB(), sh: new GB(), pud: new GB() }, i: 0 });
+    const P = ch.pend || (ch.pend = { g: { s: new GB(), det: new GB(), d1: new GB(), d2: new GB(), glow: new GB(), lines: new GB(), sh: new GB(), pud: new GB(), nc0: new GB(), nc1: new GB(), nc2: new GB() }, i: 0 });
     do { if (P.i < ch.cmds.length) ch.cmds[P.i++](P.g); } while (P.i < ch.cmds.length && performance.now() < deadline);
     if (P.i < ch.cmds.length) return false;
     this.uploadChunk(ch, R, P.g); ch.pend = null; return true;
   }
   buildChunk(ch, R) {
     if (ch.m) return;
-    const g = { s: new GB(), det: new GB(), d1: new GB(), d2: new GB(), glow: new GB(), lines: new GB(), sh: new GB(), pud: new GB() };
+    const g = { s: new GB(), det: new GB(), d1: new GB(), d2: new GB(), glow: new GB(), lines: new GB(), sh: new GB(), pud: new GB(), nc0: new GB(), nc1: new GB(), nc2: new GB() };
     for (const f of ch.cmds) f(g);
     ch.pend = null; this.uploadChunk(ch, R, g);
   }
   uploadChunk(ch, R, g) {
-    ch.m = { s: R.mesh(g.s.build()), det: R.mesh(g.det.build()), d1: R.mesh(g.d1.build()), d2: R.mesh(g.d2.build()), glow: R.mesh(g.glow.build()), lines: R.mesh(g.lines.build(), R.gl.LINES), sh: R.mesh(g.sh.build()), pud: R.mesh(g.pud.build()) };
+    ch.m = { s: R.mesh(g.s.build()), det: R.mesh(g.det.build()), d1: R.mesh(g.d1.build()), d2: R.mesh(g.d2.build()), glow: R.mesh(g.glow.build()), lines: R.mesh(g.lines.build(), R.gl.LINES), sh: R.mesh(g.sh.build()), pud: R.mesh(g.pud.build()), nc0: R.mesh(g.nc0.build()), nc1: R.mesh(g.nc1.build()), nc2: R.mesh(g.nc2.build()) };
     ch.tris = (g.s.count + g.det.count + g.d1.count + g.d2.count) / 3;
   }
   freeChunk(ch, R) { if (!ch.m) return; for (const k in ch.m) R.free(ch.m[k]); ch.m = null; }
@@ -167,8 +175,9 @@ export class City {
   // 地面の高さ（現在の高さ cy を考慮して高架と地上を区別）
   groundY(x, z, cy = 0) {
     let y = this.terrainY(x, z);
-    const m = this.mtnRoadAt ? this.mtnRoadAt(x, z) : null;
-    if (m) y = m.y;
+    const ms = this.mtnSurfY ? this.mtnSurfY(x, z) : null; // 峠道：描画した路面・路肩と同じ高さ
+    if (ms != null) y = ms;
+    else if (this.padLinkD && z < -1400 && this.padLinkD(x, z) < 5) y = this.restPad.y + 0.03; // 道の駅の進入路
     for (const s of this.surfaces) if (x > s.x0 && x < s.x1 && z > s.z0 && z < s.z1) { const ys = s.y(x, z); if (cy > ys - 1.6 && ys > y) y = ys; }
     return y;
   }
@@ -185,12 +194,13 @@ export class City {
     for (const x of XL) {
       R('ns', x, -1000, -500, x === 0 ? 'art' : Math.abs(x) === 500 ? 'ring' : x === BYP_X ? 'byp' : 'out');
       if (Math.abs(x) >= 1000) R('ns', x, -500, 500, x === BYP_X ? 'byp' : 'out');
-      R('ns', x, 500, 2000, x === BYP_X ? 'byp' : x === 0 ? 'art' : 'out');
+      if (x === 500 || x === 1500) R('ns', x, 500, 1000, 'out'); // 北側は学園地区・ニュータウンの曲線道路に置き換え
+      else R('ns', x, 500, 2000, x === BYP_X ? 'byp' : x === 0 ? 'art' : 'out');
     }
     R('ew', -1000, -2000, 2000, 'out');
     for (const z of [-500, 500]) { R('ew', z, -2000, -500, 'out'); R('ew', z, 500, 2000, 'out'); }
     R('ew', 0, -2000, -500, 'art'); R('ew', 0, 500, 2000, 'nat');
-    for (const z of [1000, 1500, 2000]) R('ew', z, -2000, 2000, 'out');
+    for (const z of [1000, 1500, 2000]) if (z === 1500) R('ew', z, -2000, 0, 'out'); else R('ew', z, -2000, 2000, 'out');
     const gradeSep = (ns, ew) => ns.c === BYP_X && ew.c === 0;
     // 交差点
     const node = (x, z) => {
@@ -204,14 +214,29 @@ export class City {
         if (!n.ns.includes(a)) n.ns.push(a); if (!n.ew.includes(b)) n.ew.push(b);
       }
     }
-    for (const n of this.nodes) { n.hx = Math.max(...n.ns.map(r => r.sp.ext)); n.hz = Math.max(...n.ew.map(r => r.sp.ext)); }
+    // 曲線道路：端点のノードをつくり（直線道路の途中なら、その道路を分割する）、ノードの道路リストに登録
+    const curveSegs = [];
+    for (const cd of CURVES) {
+      const sp = mkSpec(cd.kind, cd.axis, 0), road = { axis: cd.axis, c: 0, a: 0, b: 0, sp, curve: true, name: cd.name };
+      const ends = [cd.pts[0], cd.pts[cd.pts.length - 1]].map(([x, z]) => {
+        const n = node(x, z);
+        for (const r of roads) if (r.axis === 'ns' ? (r.c === x && r.a < z && z < r.b && !n.ns.includes(r)) : (r.c === z && r.a < x && x < r.b && !n.ew.includes(r))) (r.axis === 'ns' ? n.ns : n.ew).push(r);
+        (cd.axis === 'ns' ? n.ns : n.ew).push(road);
+        return n;
+      });
+      curveSegs.push({ A: ends[0], B: ends[1], road, full: curvePts(cd.pts), curve: true, name: cd.name, dead: cd.dead });
+    }
+    for (const n of this.nodes) { n.hx = Math.max(0, ...n.ns.map(r => r.sp.ext)); n.hz = Math.max(0, ...n.ew.map(r => r.sp.ext)); if (!n.hx) n.hx = n.hz; if (!n.hz) n.hz = n.hx; }
     // 道路ごとに交差点を並べて区間をつくる
     this.segs = [];
+    this.curveSegs = curveSegs;
     for (const r of roads) {
       const ns = this.nodes.filter(n => (r.axis === 'ns' ? n.x === r.c && n.ns.includes(r) : n.z === r.c && n.ew.includes(r)))
         .sort((p, q) => r.axis === 'ns' ? p.z - q.z : p.x - q.x);
       for (let i = 0; i < ns.length - 1; i++) this.segs.push({ A: ns[i], B: ns[i + 1], road: r });
     }
+    for (const s of curveSegs) this.segs.push(s);
+    this.corridors = curveSegs.map(s => ({ pts: s.full, w: s.road.sp.ext + 1.0 }));
     // 交差点の制御（隣接数を先に数える）
     const nb = new Map(); for (const n of this.nodes) nb.set(n, new Set());
     for (const s of this.segs) { nb.get(s.A).add(s.B); nb.get(s.B).add(s.A); }
@@ -260,7 +285,7 @@ export class City {
       ctrl: mustStop, lots: [], seg, tunnel: seg.tunnel ? (seg.fwd ? seg.tunnel.map(([a, b]) => [fi.len - b - trimA, fi.len - a - trimA]) : seg.tunnel.map(([a, b]) => [a - trimA, b - trimA])) : null
     };
     const cx = (A.x + B.x) / 2, cz = (A.z + B.z) / 2;
-    e.dens = { art: 1.0, nat: 1.1, byp: 0.6, ring: 0.5, shop: 0.5, minor: 0.42, out: 0.3, mtn: 0.05 }[sp.kind] * (Math.abs(cx) < 260 && Math.abs(cz) < 400 ? 1.3 : 1);
+    e.dens = ({ art: 1.0, nat: 1.1, byp: 0.6, ring: 0.5, shop: 0.5, minor: 0.42, out: 0.3, mtn: 0.05, gak: 0.7, nt: 0.4, ntc: 0.12, kaido: 0.35 }[sp.kind] ?? 0.3) * (Math.abs(cx) < 260 && Math.abs(cz) < 400 ? 1.3 : 1);
     if (!straight) { // カーブでの制限速度（横G 2.6m/s²）
       e.vc = pts.map((_, i) => {
         if (i === 0 || i === pts.length - 1) return 99;
@@ -400,7 +425,7 @@ export class City {
         this.add(mid[0], mid[2], g => {
           const d2 = g.d2;
           // 中央線：日本の標準は白。黄色の実線は追越し禁止区間（交差点手前30m・橋の上）だけ。生活道路（minor）は中央線なし
-          if (fwd && !ow && sp.kind !== 'mtn' && sp.kind !== 'minor' && !sp.med) {
+          if (fwd && !ow && sp.kind !== 'mtn' && sp.kind !== 'minor' && sp.kind !== 'ntc' && sp.kind !== 'kaido' && !sp.med) {
             const yel = s => s < 30 || s > e.len - 30 || this.onBridge(e, s);
             const dashed = e.lanes === 1;
             for (let s = q0; s < q1; s += 5) {
@@ -539,12 +564,15 @@ export class City {
     const f = this.frame(r, side), n = Math.max(1, Math.round(f.F / (opt.pw || 12.5))), pw = f.F / n;
     for (let k = 0; k < n; k++) {
       const pr = this.frect(f, k * pw, (k + 1) * pw, 0, f.D);
+      const ck = opt.check ? opt.check(pr) : this.corridorHit(pr) ? 'green' : 'ok'; if (ck === 'skip') continue;
+      if (ck === 'green') { this.greenStrip(pr); continue; } // 曲線道路（旧街道など）の通り道は緑地帯
       const x = R();
       if (x < 0.7 || opt.housesOnly) this.house(pr, side, R);
       else if (x < 0.82) this.apartment(pr, side, R);
       else if (x < 0.89) this.tsukiParking(pr, side, R);
-      else if (x < 0.94 && R() < 0.2) this.siteWork(pr, side, R); // 建築中・解体中
-      else if (x < 0.94) { const f = this.frame(pr, side), sp = f.W(1.2, 1.2), urichi = R() < 0.5; if (urichi) this.addBox(sp[0] - 0.15, sp[1] - 0.15, sp[0] + 0.15, sp[1] + 0.15, 'p'); this.add((pr.x0 + pr.x1) / 2, (pr.z0 + pr.z1) / 2, g => { g.s.flat(pr.x0 + 1, pr.z0 + 1, pr.x1 - 1, pr.z1 - 1, 0.03, { c: [0.62, 0.66, 0.45], lay: L.FIELD }, 3); if (urichi) this.signPole(g.det, sp[0], sp[1], f.inv, L.SG_URICHI, 1.2, 0.6, 1.0, 0); }); }
+      else if (x < 0.94 && (this.siteN || 0) < 6 && R() < 0.25) { this.siteN = (this.siteN || 0) + 1; this.siteWork(pr, side, R); } // 建築中・解体中（市内6か所まで）
+      else if (x < 0.94) { const y = R(); if (y < 0.5) this.house(pr, side, R); else if (y < 0.68) this.kidsPark(pr, side, R); else if (y < 0.86) this.homeGarden(pr, side, R); else if (y < 0.96 || (this.stats.halls || 0) >= 14) this.tsukiParking(pr, side, R); else this.hall(pr, side, R); } // 空き地は残さない
+      else if (false) { const f = this.frame(pr, side), sp = f.W(1.2, 1.2), urichi = R() < 0.5; if (urichi) this.addBox(sp[0] - 0.15, sp[1] - 0.15, sp[0] + 0.15, sp[1] + 0.15, 'p'); this.add((pr.x0 + pr.x1) / 2, (pr.z0 + pr.z1) / 2, g => { g.s.flat(pr.x0 + 1, pr.z0 + 1, pr.x1 - 1, pr.z1 - 1, 0.03, { c: [0.62, 0.66, 0.45], lay: L.FIELD }, 3); if (urichi) this.signPole(g.det, sp[0], sp[1], f.inv, L.SG_URICHI, 1.2, 0.6, 1.0, 0); }); }
       else this.smallShop(pr, side, R);
     }
   }
@@ -674,6 +702,24 @@ export class City {
         const a = f.W(u0, w0), c2 = f.W(u1, w0 - 1.6);
         g.s.box(Math.min(a[0], c2[0]), fh0 - 0.1, Math.min(a[1], c2[1]), Math.max(a[0], c2[0]), fh0 + 0.1, Math.max(a[1], c2[1]), { c: o.awning });
       }
+      // 用途別の外観：マンション＝各階のバルコニー（手すり・室外機）、オフィス＝入口のキャノピーと屋上の看板塔・給水塔
+      const R2 = rng((b.x0 * 7 + b.z0 * 3) | 0);
+      if (o.lay === L.MANSION && o.floors >= 2) {
+        const P = this.frect(f, u0 + 0.8, u1 - 0.8, w0 - 1.25, w0);
+        for (let k = 1; k <= o.floors - (fh0 > 0 ? 0 : 1); k++) {
+          const y = fh0 + (fh0 > 0 ? k - 1 : k) * o.fh;
+          g.s.box(P.x0, y - 0.12, P.z0, P.x1, y + 0.05, P.z1, { c: [0.86, 0.86, 0.84] });
+          const r0 = this.frect(f, u0 + 0.8, u1 - 0.8, w0 - 1.25, w0 - 1.15); g.det.box(r0.x0, y + 0.05, r0.z0, r0.x1, y + 1.05, r0.z1, { c: R2() < 0.5 ? [0.62, 0.7, 0.76] : [0.8, 0.8, 0.78] });
+          for (let u = u0 + 2.5; u < u1 - 1.5; u += 4.2) { const q = f.W(u, w0 - 0.6); g.det.cbox(q[0], y + 0.35, q[1], 0.7, 0.55, 0.7, { c: [0.9, 0.9, 0.88] }); }
+        }
+        const en = this.frect(f, (u0 + u1) / 2 - 2.5, (u0 + u1) / 2 + 2.5, w0 - 2.2, w0); g.s.box(en.x0, 2.9, en.z0, en.x1, 3.1, en.z1, { c: [0.5, 0.52, 0.55] }); // 共用玄関の庇
+      } else if ((o.lay === L.OFFICE || o.lay === L.OFFICE2) && H > 9) {
+        const en = this.frect(f, (u0 + u1) / 2 - 4, (u0 + u1) / 2 + 4, w0 - 3, w0);
+        g.s.box(en.x0, 3.6, en.z0, en.x1, 3.85, en.z1, { c: [0.7, 0.74, 0.78] });
+        for (const u of [(u0 + u1) / 2 - 3.6, (u0 + u1) / 2 + 3.6]) { const q = f.W(u, w0 - 2.8); g.det.cyl(q[0], 0, q[1], 0.12, 3.6, 6, { c: [0.75, 0.76, 0.78] }); }
+        if (H > 20 && R2() < 0.5) { const q = f.W((u0 + u1) / 2, (w0 + w1) / 2); g.s.cyl(q[0], H, q[1], 1.6, 3.5, 10, { c: [0.82, 0.82, 0.8] }); }
+      }
+      if (o.public) { for (let k = 0; k < 3; k++) { const q = f.W(u0 + 3 + k * 2.2, w0 - 4); g.det.cyl(q[0], 0, q[1], 0.05, 8, 4, { c: [0.85, 0.85, 0.85] }); g.det.cbox(q[0] + 0.6, 7.4, q[1], 1.2, 0.8, 0.02, { c: [[0.95, 0.95, 0.95], [0.2, 0.4, 0.75], [0.85, 0.25, 0.25]][k] }); } const q = f.W(u1 - 4, w0 - 3); g.det.panel(q[0] - 1, q[1], q[0] + 1, q[1], 0.8, 2.0, 0.03, n, { c: [1, 1, 1], lay: L.POSTER }); }
     });
     return b;
   }
@@ -699,7 +745,9 @@ export class City {
     // 静的駐車
     const baked = [];
     // 静的駐車：日本の駐車場らしく 65〜75% は後ろ向き（バック駐車）
-    for (const s of slots) if (R() < (opt.fill ?? 0.35)) { s.occ = 'static'; const m = pickModel(R), yy = R() < 0.7 ? s.yaw + Math.PI : s.yaw; baked.push([s, m, pickColor(m, R), yy]); this.addCarBox(s.x, s.z, yy, m); this.stats.backIn = (this.stats.backIn || 0) + (yy !== s.yaw ? 1 : 0); }
+    // 用途別の車種：工業・物流は商用車7割以上、店舗・駅・公共は乗用車のみ。店舗の車は閉店後に段階的に消える
+    const lk = L0.kind, ind = lk === 'ind', shopLot = lk === 'big' || lk === 'shop' || lk === 'conv';
+    for (const s of slots) if (R() < (opt.fill ?? 0.35)) { s.occ = 'static'; const m = ind ? (R() < 0.75 ? pickCommercial(R) : pickPassenger(R)) : pickPassenger(R), yy = R() < 0.7 ? s.yaw + Math.PI : s.yaw, nb = shopLot && !(lk === 'conv' && R() < 0.3) ? (R() * 3 | 0) : null; if (ind && m.L > 6.5) { s.occ = null; continue; } baked.push([s, m, pickColor(m, R), yy, nb]); this.addCarBox(s.x, s.z, yy, m, nb); this.stats.parkCom = (this.stats.parkCom || 0) + (isCommercial(m) ? 1 : 0); this.stats.parkPass = (this.stats.parkPass || 0) + (isCommercial(m) ? 0 : 1); this.stats.backIn = (this.stats.backIn || 0) + (yy !== s.yaw ? 1 : 0); }
     this.stats.parked += baked.length;
     this.mm.lots.push(lr);
     this.add((lr.x0 + lr.x1) / 2, (lr.z0 + lr.z1) / 2, g => {
@@ -711,7 +759,7 @@ export class City {
         }
         const cs = f.W(s.u, s.band + 4.6); g.s.cbox(cs[0], 0.07, cs[1], f.side === 'n' || f.side === 's' ? 1.4 : 0.2, 0.14, f.side === 'n' || f.side === 's' ? 0.2 : 1.4, { c: [0.7, 0.7, 0.68] });
       }
-      for (const [s, m, c, yy] of baked) this.bakeCar(g.det, m, c, s.x, s.z, yy);
+      for (const [s, m, c, yy, nb] of baked) this.bakeCar(nb == null ? g.det : g['nc' + nb], m, c, s.x, s.z, yy);
       if (opt.sign != null) { const p = f.W(u0 + 1, w0 + 0.5); this.poleSign(g.det, p[0], p[1], f, opt.sign, opt.signH || 4.5); }
     });
     // NPC用：対応する道路エッジ（駐車場が進行方向の左側になる向き）
@@ -734,7 +782,7 @@ export class City {
     this.addDriveway(this.frect(f, f.F / 2 - 3.5, f.F / 2 + 3.5, -4.3, 0.2));
     const cars = [], yaw = Math.atan2(f.inv[0], f.inv[1]);
     const n = Math.floor((f.F - 1) / 2.6);
-    for (let k = 0; k < n; k++) if (R() < fill) { const m = pickModel(R); const p = f.W(1.8 + k * 2.6, Math.min(f.D, 18) - 3), yy = R() < 0.8 ? yaw + Math.PI : yaw; cars.push([p, m, pickColor(m, R), yy]); this.addCarBox(p[0], p[1], yy, m); }
+    for (let k = 0; k < n; k++) if (R() < fill) { const m = pickPassenger(R); const p = f.W(1.8 + k * 2.6, Math.min(f.D, 18) - 3), yy = R() < 0.8 ? yaw + Math.PI : yaw; cars.push([p, m, pickColor(m, R), yy]); this.addCarBox(p[0], p[1], yy, m); }
     this.stats.parked += cars.length; this.mm.lots.push(lr);
     this.add((lr.x0 + lr.x1) / 2, (lr.z0 + lr.z1) / 2, g => {
       g.d1.flat(lr.x0, lr.z0, lr.x1, lr.z1, 0, { c: [0.85, 0.85, 0.85], mat: 7, lay: L.ASPHALT }, 8);
@@ -742,6 +790,61 @@ export class City {
       for (const [p, m, c, yy] of cars) this.bakeCar(g.det, m, c, p[0], p[1], yy);
       if (sign != null) { const p = f.W(0.6, 0.4); this.poleSign(g.det, p[0], p[1], f, sign, 2.6); }
     });
+  }
+  corridorHit(r) {
+    for (const c of this.corridors || []) for (let i = 0; i < c.pts.length - 1; i++) {
+      const a = c.pts[i], b = c.pts[i + 1];
+      if (Math.max(a[0], b[0]) + c.w < r.x0 || Math.min(a[0], b[0]) - c.w > r.x1 || Math.max(a[1], b[1]) + c.w < r.z0 || Math.min(a[1], b[1]) - c.w > r.z1) continue;
+      const cx = clamp((a[0] + b[0]) / 2, r.x0, r.x1), cz = clamp((a[1] + b[1]) / 2, r.z0, r.z1);
+      for (const [px, pz] of [[cx, cz], [r.x0, r.z0], [r.x1, r.z0], [r.x0, r.z1], [r.x1, r.z1], [(r.x0 + r.x1) / 2, (r.z0 + r.z1) / 2]]) {
+        const vx = b[0] - a[0], vz = b[1] - a[1], t = clamp(((px - a[0]) * vx + (pz - a[1]) * vz) / (vx * vx + vz * vz || 1), 0, 1);
+        if (Math.hypot(a[0] + vx * t - px, a[1] + vz * t - pz) < (c.lane ? c.w - 0.4 : c.w + 2)) return true;
+      }
+    }
+    return false;
+  }
+  greenStrip(pr) { // 植栽帯（芝・低木・高木）。広いところは木を植えて緑地らしくする
+    const w = pr.x1 - pr.x0, d = pr.z1 - pr.z0, R = rng((pr.x0 * 13 + pr.z0 * 7) | 0), trees = [];
+    if (w > 5 && d > 5) for (let x = pr.x0 + 3; x < pr.x1 - 2; x += 7) for (let z = pr.z0 + 3; z < pr.z1 - 2; z += 7) if (R() < 0.55) trees.push([x + (R() - 0.5) * 2, z + (R() - 0.5) * 2, R() < 0.4]);
+    for (const [x, z, sh] of trees) if (!sh) this.addBox(x - 0.3, z - 0.3, x + 0.3, z + 0.3, 'p');
+    this.add((pr.x0 + pr.x1) / 2, (pr.z0 + pr.z1) / 2, g => { g.s.flat(pr.x0, pr.z0, pr.x1, pr.z1, 0.01, { c: [0.6, 0.72, 0.45], lay: L.GRASS }, 6);
+      for (const [x, z, sh] of trees) if (sh) g.det.cbox(x, 0.45, z, 1.6, 0.9, 1.6, { c: [0.35, 0.55, 0.3], lay: L.TREE }); else this.tree(g.det, x, z, rng((x * 31 + z) | 0)); });
+  }
+  // 児童遊園（小さな公園：すべり台・ブランコ・ベンチ・植栽）
+  kidsPark(pr, side, R) {
+    const f = this.frame(pr, side), b = this.frect(f, 0.5, f.F - 0.5, 0.5, f.D - 0.5), cx = (b.x0 + b.x1) / 2, cz = (b.z0 + b.z1) / 2;
+    this.stats.kidsParks = (this.stats.kidsParks || 0) + 1; this.mm.green.push(b);
+    const sl = f.W(f.F * 0.3, f.D * 0.5), sw = f.W(f.F * 0.7, f.D * 0.55), bn = f.W(f.F * 0.5, f.D - 2);
+    this.addBox(sl[0] - 1, sl[1] - 1, sl[0] + 1, sl[1] + 1, 'p'); this.addBox(sw[0] - 1, sw[1] - 0.5, sw[0] + 1, sw[1] + 0.5, 'p');
+    this.add(cx, cz, g => {
+      g.d1.flat(b.x0, b.z0, b.x1, b.z1, 0.02, { c: [0.85, 0.78, 0.62], lay: L.FIELD }, 4);
+      g.det.box(b.x0, 0, b.z0, b.x1, 0.9, b.z0 + 0.08, { c: [0.3, 0.5, 0.35] });
+      g.det.box(sl[0] - 0.4, 0, sl[1] - 0.4, sl[0] + 0.4, 2.0, sl[1] + 0.4, { c: [0.9, 0.35, 0.2] }); g.det.quadN([sl[0] - 0.4, 2.0, sl[1] + 0.4], [sl[0] + 0.4, 2.0, sl[1] + 0.4], [sl[0] + 0.4, 0.1, sl[1] + 3.5], [sl[0] - 0.4, 0.1, sl[1] + 3.5], [0, 0.85, 0.5], { c: [0.95, 0.8, 0.2] });
+      for (const dx of [-1, 1]) g.det.beam([sw[0] + dx, 0, sw[1]], [sw[0] + dx, 2.3, sw[1]], 0.05, { c: [0.2, 0.45, 0.8] }); g.det.beam([sw[0] - 1, 2.3, sw[1]], [sw[0] + 1, 2.3, sw[1]], 0.05, { c: [0.2, 0.45, 0.8] }); g.det.box(sw[0] - 0.3, 0.45, sw[1] - 0.15, sw[0] + 0.3, 0.5, sw[1] + 0.15, { c: [0.7, 0.2, 0.2] });
+      g.det.box(bn[0] - 0.9, 0.4, bn[1] - 0.25, bn[0] + 0.9, 0.48, bn[1] + 0.25, { c: [0.6, 0.42, 0.28] });
+      for (let k = 0; k < 3; k++) this.tree(g.det, b.x0 + 2 + k * (b.x1 - b.x0 - 4) / 2, b.z1 - 1.5, R);
+    });
+  }
+  // 家庭菜園（畝と支柱・小さな物置）
+  homeGarden(pr, side, R) {
+    const f = this.frame(pr, side), b = this.frect(f, 0.8, f.F - 0.8, 1, f.D - 1), cx = (b.x0 + b.x1) / 2, cz = (b.z0 + b.z1) / 2, sh = f.W(f.F - 2, f.D - 2.5);
+    this.stats.gardens = (this.stats.gardens || 0) + 1; this.addBox(sh[0] - 1, sh[1] - 1, sh[0] + 1, sh[1] + 1);
+    this.add(cx, cz, g => {
+      g.d1.flat(b.x0, b.z0, b.x1, b.z1, 0.02, { c: [0.9, 0.85, 0.7], lay: L.CROP }, 3);
+      for (let k = 0; k < 6; k++) { const p = f.W(1.5 + k * (f.F - 3) / 6, f.D * 0.45); g.det.beam([p[0], 0, p[1]], [p[0], 1.2, p[1]], 0.02, { c: [0.6, 0.5, 0.35] }); }
+      g.det.cbox(sh[0], 1.0, sh[1], 1.8, 2.0, 1.6, { c: [0.75, 0.78, 0.74] });
+      g.det.box(b.x0, 0, b.z0, b.x1, 1.0, b.z0 + 0.06, { c: [0.55, 0.55, 0.5] });
+    });
+  }
+  // 集会所（地区の小さな公共施設：掲示板と旗竿）
+  hall(pr, side, R) {
+    const f = this.frame(pr, side);
+    const b = this.building(f, 1, f.F - 1, 3, Math.min(f.D - 1, 12), { floors: 1, fh: 3.4, fh0: 0, lay: L.HOUSE, tw: 7, th: 5.6, col: [0.88, 0.86, 0.8], roof: 'gable', rise: 1.6, R, roofItems: false });
+    if (!b) return;
+    this.stats.halls = (this.stats.halls || 0) + 1;
+    const p = f.W(1.2, 1.5), q = f.W(f.F - 1.5, 1.2);
+    this.addBox(p[0] - 0.6, p[1] - 0.2, p[0] + 0.6, p[1] + 0.2, 'p');
+    this.add(p[0], p[1], g => { g.det.cyl(q[0], 0, q[1], 0.04, 6, 4, { c: [0.8, 0.8, 0.8] }); g.det.panel(p[0] - 0.6, p[1], p[0] + 0.6, p[1], 0.8, 1.8, 0.03, [-f.inv[0], 0, -f.inv[1]], { c: [1, 1, 1], lay: L.POSTER }); this.signPole(g.det, p[0] + 0.9, p[1], f.inv, L.SG_GOMI ?? L.POSTER, 0.8, 0.4, 1.5, 0); });
   }
   // 建築中の家（足場と養生シート）／解体中（がれきと仮囲い）
   siteWork(pr, side, R) {
@@ -796,10 +899,13 @@ export class City {
     this.addBox(x - 0.2, z - 0.2, x + 0.2, z + 0.2, 'p');
   }
   railBlock(b) { return b.z0 < -438 && b.z1 > -452; }
-  addCarBox(x, z, yaw, m) {
+  addCarBox(x, z, yaw, m, nb = null) { // nb：閉店後に消える駐車車両の段階（0〜2）。消えている間は当たり判定もなし
     const c = Math.abs(Math.cos(yaw)) > 0.5, hl = m.L / 2, hw = m.W / 2;
-    this.addBox(x - (c ? hw : hl), z - (c ? hl : hw), x + (c ? hw : hl), z + (c ? hl : hw), 'c');
+    const b = this.addBox(x - (c ? hw : hl), z - (c ? hl : hw), x + (c ? hw : hl), z + (c ? hl : hw), 'c');
+    if (nb != null) b.nb = nb;
   }
+  // 店舗の駐車車両が見えている時刻か（段階ごとに 21:00/21:40/22:20 に帰り、7:30/8:30/9:30 に来る）
+  shopCarsOn(nb, hour) { return hour >= 7.5 + nb && hour < 21 + nb * 0.67; }
   bakeCar(gb, m, c, x, z, yaw, y = 0) {
     const cls = plateClass(m), i = (Math.abs(x * 13.7 + z * 7.3) | 0) % (8 * (PLATES[cls] || 1));
     gb.setXf(x, y, z, yaw); buildHull(m, gb, { paint: c.rgb, lod: 2, plateUV: plateUV(cls, i) }); gb.clearXf();
@@ -877,7 +983,50 @@ export class City {
   genStation(B) {
     const R = B.R, f = this.frame(B, 's');
     // 高架駅舎（1階コンコース）
-    this.building(f, 8, f.F - 8, 34, 52, { floors: 1, fh: 6.2, fh0: 0, lay: L.OFFICE2, tw: 16, th: 6.2, col: [0.86, 0.86, 0.84], sign: L.SG_STATION, signY: 4.2, signH: 2.6, R, roofItems: false });
+    this.building(f, 8, f.F - 8, 34, 52, { floors: 1, fh: 8.4, fh0: 4.2, glay: L.SHOP, gcol: [0.85, 0.92, 1], lay: L.OFFICE2, tw: 16, th: 6.2, col: [0.86, 0.86, 0.84], R, roofItems: false });
+    // v0.5 駅舎を「駅」と分かる造りに：屋上の大きな駅名看板（夜も光る）、ガラスの正面、出入口の大屋根と柱、改札口、駅前広場の舗装・照明・ベンチ、
+    // タクシー／バス乗り場の路面表示、ホームへの跨線橋
+    { const sA = f.W(f.F / 2 - 14, 34), sB = f.W(f.F / 2 + 14, 34), n = [-f.inv[0], 0, -f.inv[1]], H = 12.6;
+      const cp = this.frect(f, f.F / 2 - 12, f.F / 2 + 12, 27, 34), gates = [], seats = [];
+      for (let k = 0; k < 6; k++) gates.push(f.W(f.F / 2 - 6 + k * 2.4, 32.6));
+      for (let k = 0; k < 4; k++) seats.push(f.W(f.F / 2 - 28 + (k % 2) * 56 + (k > 1 ? 4 : 0), 30));
+      const roadTxt = (s, x, z, yaw, w) => this.add(x, z, g => { g.d2.setXf(x, 0, z, yaw); g.d2.quadN([-w / 2, 0.02, -1.2], [w / 2, 0.02, -1.2], [w / 2, 0.02, 1.2], [-w / 2, 0.02, 1.2], [0, 1, 0], { c: [1, 1, 1], lay: s, mat: 17 }, [[1, 1], [0, 1], [0, 0], [1, 0]]); g.d2.clearXf(); });
+      this.add((sA[0] + sB[0]) / 2, (sA[1] + sB[1]) / 2, g => {
+        g.s.panel(sA[0], sA[1], sB[0], sB[1], H + 0.4, H + 7.4, 0.1, n, { c: [1, 1, 1], mat: 16, lay: L.SG_STATION }); // 屋上の駅名看板（幅28m）
+        g.s.box(cp.x0, 5.6, cp.z0, cp.x1, 6.0, cp.z1, { c: [0.75, 0.78, 0.82] }); // 出入口の大屋根
+        for (const u of [f.F / 2 - 11, f.F / 2 - 4, f.F / 2 + 4, f.F / 2 + 11]) { const q = f.W(u, 27.6); g.s.cyl(q[0], 0, q[1], 0.3, 5.6, 8, { c: [0.85, 0.86, 0.88] }); }
+        for (const q of gates) { g.det.cbox(q[0], 0.55, q[1], 0.35, 1.1, 1.6, { c: [0.75, 0.78, 0.8] }); g.det.cbox(q[0], 1.12, q[1] + 0.0, 0.3, 0.04, 0.3, { c: [0.2, 0.6, 0.95], mat: 18 }); } // 自動改札機
+        const pl = this.frect(f, 8, f.F - 8, 26, 34); g.d1.flat(pl.x0, pl.z0, pl.x1, pl.z1, 0.02, { c: [0.92, 0.88, 0.82], lay: L.SIDEWALK }, 2); // 駅前広場の舗装
+        for (const q of seats) g.det.cbox(q[0], 0.45, q[1], 2.0, 0.1, 0.5, { c: [0.6, 0.42, 0.28] });
+        for (let u = 12; u < f.F - 8; u += 16) { const q = f.W(u, 29); g.det.cyl(q[0], 0, q[1], 0.09, 6, 6, { c: [0.3, 0.32, 0.35] }); g.det.cbox(q[0], 6.1, q[1], 0.5, 0.2, 0.5, { c: [1, 0.95, 0.85], mat: 8 }); g.glow.flat(q[0] - 10, q[1] - 10, q[0] + 10, q[1] + 10, 0.06, { c: [1, 0.95, 0.85], mat: 5, lay: L.GLOW }); }
+        g.glow.flat(cp.x0 - 6, cp.z0 - 6, cp.x1 + 6, cp.z1 + 6, 0.07, { c: [1, 0.97, 0.9], mat: 5, lay: L.GLOW });
+        // 跨線橋（駅舎の屋上の連絡口 → ガラス張りの通路で線路をまたぎ → 各ホームへ階段・エレベーター、南口へ下りる塔）
+        { const X0 = 108, X1 = 114, ZN = -433.5, ZS = -455, FY = 14.6, RY = 17.6, glass = { c: [0.85, 0.9, 0.95], mat: 3, side: { lay: L.OFFICE2, tw: 4, th: 3 } };
+          g.s.box(106, 12.6, -437.5, 116, RY + 0.2, -430.5, { c: [0.86, 0.86, 0.84], mat: 3, side: { lay: L.OFFICE2, tw: 5, th: 5.4 } }); // 屋上の連絡口（階段室）
+          g.s.box(X0, FY - 0.45, ZS, X1, FY, -437.5, { c: [0.7, 0.72, 0.74] }); // 床版
+          for (const x of [X0, X1 - 0.12]) g.s.box(x, FY, ZS, x + 0.12, RY, -437.5, glass); // ガラスの側壁
+          g.s.box(X0 - 0.4, RY, ZS - 0.4, X1 + 0.4, RY + 0.25, -437.1, { c: [0.55, 0.58, 0.6] }); // 屋根（張り出し）
+          for (let z = ZS + 1; z < -438; z += 3) g.det.box(X0 + 0.15, RY - 0.12, z, X1 - 0.15, RY - 0.05, z + 0.4, { c: [1, 0.97, 0.9], mat: 8 }); // 天井の照明
+          for (let z = ZS + 2; z < -437; z += 6) for (const x of [X0 - 0.3, X1 + 0.3]) g.s.box(x - 0.05, FY - 0.45, z, x + 0.05, RY, z + 0.1, { c: [0.6, 0.62, 0.64] }); // 方立
+          // 各ホームへの階段（相対式ホーム z=-441.85 / -448.15、ホーム面 9.25m）とエレベーター
+          for (const pz of [-441.85, -448.15]) {
+            const n = 10, dx = 1.0, dy = (FY - 0.45 - 9.25) / n;
+            for (let k = 0; k < n; k++) g.s.box(X1 + k * dx, 9.25, pz - 0.55, X1 + (k + 1) * dx, FY - 0.45 - k * dy, pz + 0.55, { c: [0.72, 0.72, 0.7] });
+            g.s.box(X1, FY - 0.45, pz - 0.62, X1 + n * dx, FY - 0.35, pz - 0.55, { c: [0.6, 0.62, 0.64] }); g.s.box(X1, FY - 0.45, pz + 0.55, X1 + n * dx, FY - 0.35, pz + 0.62, { c: [0.6, 0.62, 0.64] });
+            g.s.box(X0 - 0.2, 9.25, pz - 0.5, X0 + 1.4, FY + 2.6, pz + 0.5, glass); // エレベーター（ガラス張り）
+          }
+          // 南口：地上まで下りる階段塔
+          g.s.box(X0 - 1, 0, ZS - 4, X1 + 1, RY + 0.2, ZS, { c: [0.84, 0.84, 0.82], mat: 3, side: { lay: L.OFFICE2, tw: 5, th: 5.8 } });
+          g.s.box(X0 - 1.5, 2.6, ZS - 6, X1 + 1.5, 2.85, ZS - 4, { c: [0.55, 0.58, 0.6] }); // 南口の庇
+          g.glow.flat(X0 - 4, ZS - 10, X1 + 4, ZS - 3, 0.06, { c: [1, 0.97, 0.9], mat: 5, lay: L.GLOW });
+        }
+      });
+      this.addBox(107, -459, 115, -455);
+      for (const q of gates) this.addBox(q[0] - 0.2, q[1] - 0.8, q[0] + 0.2, q[1] + 0.8, 'p');
+      this.stationLabel = f.W(f.F / 2, 40);
+      (this.pedAreas = this.pedAreas || []).push({ ...this.frect(f, 8, f.F - 8, 27, 33), w: 2.2, name: 'station' }, { ...this.frect(f, 4, f.F / 2 - 17, 3, 26), w: 1.0, name: 'station2' }, { ...this.frect(f, f.F / 2 + 17, f.F - 4, 3, 26), w: 1.0, name: 'station3' });
+      this.stationRoadText = { f, roadTxt };
+    }
     // 駅前ロータリー（時計回り）
     const cu = f.F / 2, cw = 17, c = f.W(cu, cw), RO = 15, RI = 6;
     const dr = this.frect(f, cu - 12, cu + 12, -4, 6);
@@ -997,9 +1146,10 @@ export class City {
       this.building(f, 68, f.F - 4, 23, 42, { ...P, floors: 1, fh: 4.5, fh0: 0, lay: L.SHOP, tw: 6, th: 4.5, col: [0.95, 0.95, 0.95], sign: L.SG_DRUG, signY: 2.9 });
       this.fillParcels(this.frect(f, 0, f.F, 66, f.D), side === 's' ? 'n' : 's', R);
     } else if (t === 'Q') { // 病院
-      this.building(f, 30, f.F - 6, 24, 70, { ...P, floors: 7, fh: 3.5, fh0: 4.5, lay: L.HOTEL, tw: 14, th: 14, glay: L.SHOP, col: [0.95, 0.95, 0.94], sign: L.SG_HOSP, signY: 4.6, roofSign: L.SG_HOSP, signH: 2.2 });
-      this.lot(f, 2, f.F - 2, 0, 22, R, { fill: 0.45, bx: B.bx, bz: B.bz, sign: L.PARK_P, entU: 14 });
-      this.lot(f, 2, 28, 24, 70, R, { fill: 0.6 });
+      this.building(f, 30, f.F - 6, 24, 70, { ...P, roofItems: false, floors: 7, fh: 3.5, fh0: 4.5, lay: L.HOTEL, tw: 14, th: 14, glay: L.SHOP, col: [0.95, 0.95, 0.94], sign: L.SG_HOSP, signY: 4.6, roofSign: L.SG_HOSP, signH: 2.2 });
+      this.lot(f, 2, f.F - 2, 0, 16, R, { fill: 0.45, bx: B.bx, bz: B.bz, sign: L.PARK_P, entU: 14 });
+      this.lot(f, 2, 18, 24, 70, R, { fill: 0.6 });
+      this.hospital = { f, H: 4.5 + 7 * 3.5 }; // 玄関の大庇・救急入口・救急車・屋上ヘリポートは districtsPost で追加
       this.fillParcels(this.frect(f, 0, f.F, 76, f.D), side === 'w' ? 'e' : 'w', R);
     } else if (t === 'M') { // 大型ショッピングセンター
       this.lot(f, 2, f.F - 2, 0, 50, R, { fill: 0.3, bx: B.bx, bz: B.bz, sign: L.SG_MALL, signH: 8 });

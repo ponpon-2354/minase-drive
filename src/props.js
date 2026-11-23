@@ -183,7 +183,7 @@ export function installProps(City) {
 // ================= 街全体の追加設備（街区生成のあとに呼ぶ） =================
 const DEST = [['水瀬駅', 0, -420], ['市役所', 250, -250], ['みなせ峠', 0, -1450], ['水瀬川', 0, 565], ['工業団地', -1750, 0], ['水瀬IC', 1000, 300], ['田園地帯', -1000, 1300], ['道の駅', -470, -1500], ['県庁方面', 2000, 0], ['西水瀬', -1500, 0]];
 export const TRAM_NAMES = ['西水瀬', '銀座通り', '市役所前', '水瀬駅通り', '本町', '東水瀬'];
-function txt(ctx, s, x, y, size, col, align = 'center', w = 999) {
+export function txt(ctx, s, x, y, size, col, align = 'center', w = 999) {
   ctx.font = `700 ${size}px 'Hiragino Kaku Gothic ProN','Hiragino Sans','Noto Sans JP','Yu Gothic',sans-serif`;
   const m = ctx.measureText(s).width; ctx.save(); ctx.translate(x, y); if (m > w) ctx.scale(w / m, 1);
   ctx.textAlign = align; ctx.textBaseline = 'middle'; ctx.fillStyle = col; ctx.fillText(s, 0, 0); ctx.restore();
@@ -192,10 +192,15 @@ function arrow(ctx, x, y, dir, col) { // dir: 0=上 -1=左 1=右
   ctx.save(); ctx.translate(x, y); ctx.rotate(dir * Math.PI / 2); ctx.fillStyle = col;
   ctx.fillRect(-5, -6, 10, 26); ctx.beginPath(); ctx.moveTo(0, -24); ctx.lineTo(-15, -4); ctx.lineTo(15, -4); ctx.fill(); ctx.restore();
 }
+export function installDyn(city) { // 動的テクスチャ（案内標識・校名など）の割り当て。全体で96枚
+  if (city.newDyn) return; city.dyn = city.dyn || []; let k = 0;
+  city.newDyn = draw => { if (k >= 96) return null; const lay = L['DYN' + k++]; city.dyn.push({ lay, draw }); return lay; };
+}
 export function roadExtras(city) {
-  const R = rng(9090), st = city.stats, dyn = city.dyn = city.dyn || [];
+  installDyn(city);
+  const R = rng(9090), st = city.stats, dyn = city.dyn;
   const pois = city.pois = city.pois || [];
-  let dynK = 0; const newDyn = draw => { if (dynK >= 48) return null; const lay = L['DYN' + dynK++]; dyn.push({ lay, draw }); return lay; };
+  const newDyn = draw => city.newDyn(draw);
   const okSide = p => !city.inDrive(p[0], p[2], 1.0) && ![...city.query(p[0], p[2], 0.6)].some(b => b.kind !== 'x' && p[0] > b.x0 - 0.6 && p[0] < b.x1 + 0.6 && p[2] > b.z0 - 0.6 && p[2] < b.z1 + 0.6);
   // ---- 案内標識（実際の方向と距離） ----
   let guides = 0;
@@ -233,8 +238,8 @@ export function roadExtras(city) {
   // ---- 信号のない横断歩道（中間部）＋ダイヤマーク ----
   let cw = 0; city.crosswalks = [];
   for (const e of city.edges) {
-    const sp = e.sp; if (e.seg.fwd !== e || !e.straight || sp.oneway || sp.med || e.len < 110 || !['art', 'out', 'ring', 'minor'].includes(sp.kind)) continue;
-    if (cw >= 26 || (e.id * 5) % 3 === 1) continue;
+    const sp = e.sp; if (e.seg.fwd !== e || !e.straight || sp.oneway || sp.med || e.len < 110 || !['art', 'out', 'ring', 'minor', 'nt', 'gak'].includes(sp.kind)) continue;
+    if (cw >= 34 || (e.id * 5) % 3 === 1) continue;
     const s = e.len * 0.5, m = city.edgePt(e, s, 0);
     if (city.inDrive(m[0], m[2], 6) || (Math.abs(m[0] - BYP_X) < 30)) continue;
     const rev = e.rev != null ? city.edges[e.rev] : null, sr = rev ? (m[0] - rev.x0) * rev.d[0] + (m[2] - rev.z0) * rev.d[1] : 0; cw++;
@@ -339,7 +344,10 @@ function zoneAndSurface(city) {
     if (z < -1000) return 'mtn';
     if (Math.abs(x) <= 260 && z > -470 && z < 300) return 'center';
     if (Math.abs(x) <= 500 && Math.abs(z) <= 500) return 'res';
-    if (x < -1500 && z > -520 && z < 520) return 'sub'; // 工業団地
+    if (z >= 1000 && x >= 0) return x < 1000 ? 'gak' : 'nt'; // 学園地区・ニュータウン
+    if (x < -1000 && z > -1020 && z < 500) return 'ind'; // 工業団地（トラック・トレーラーが多い）
+    if (z > 600 && x >= 1000) return 'sub';
+    if (z > 600 && z < 1000 && x >= -1000) return 'sub'; // 川の南の住宅地
     if (x > 500 && z > -520 && z < 520) return 'sub'; // 国道ロードサイド
     if (z > 600 || Math.abs(x) > 1500) return 'farm';
     if (Math.abs(z) < 40 && x > 500) return 'sub';
@@ -357,11 +365,15 @@ function zoneAndSurface(city) {
   for (const r of city.mm.lots) paint(r.x0, r.z0, r.x1, r.z1, 1);
   for (const l of city.mm.lanes) { if (l.poly) continue; const w = l.w + 0.3, v = l.kind === 'farm' ? 3 : 1; const ex = l.kind === 'lane' || l.kind === 'farm' ? 2 : l.w; if (l.axis === 'ns') paint(l.c - w, l.a - ex, l.c + w, l.b + ex, v); else paint(l.a - ex, l.c - w, l.b + ex, l.c + w, v); }
   for (const r of city.driveways) paint(r.x0, r.z0, r.x1, r.z1, 1);
+  // 曲線道路（学園地区・ニュータウン・旧街道）：中心線に沿って歩道→車道の順に塗る
+  for (const s of city.curveSegs || []) { const sp = s.road.sp, P = s.full;
+    for (const [w, v] of [[sp.ext, sp.sw > 0 ? 2 : 3], [sp.hw + 0.3, 1]]) for (let i = 0; i < P.length - 1; i++) { const a = P[i], b = P[i + 1], n = Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / 1.5); for (let k = 0; k <= n; k++) { const x = a[0] + (b[0] - a[0]) * k / n, z = a[1] + (b[1] - a[1]) * k / n, r = w * 0.72; paint(x - r, z - r, x + r, z + r, v); } } }
+  for (const n of city.nodes) if (n.cfill || city.extraNb.get(n).size === 1) paint(n.x - Math.max(n.hx, 11), n.z - Math.max(n.hz, 11), n.x + Math.max(n.hx, 11), n.z + Math.max(n.hz, 11), 1);
   for (const n of city.nodes) paint(n.x - n.hx - 0.5, n.z - n.hz - 0.5, n.x + n.hx + 0.5, n.z + n.hz + 0.5, 1);
   city.surfGrid = G;
   city.surfaceAt = (x, z, y = 0) => {
     if (y > 1.2) return 1; // 高架・橋の上
-    if (z < -1000) { const m = city.mtnRoadAt && city.mtnRoadAt(x, z); if (m) return 1; const n = city.mtnNearest && city.mtnNearest(x, z); if (n && n.d < city.mtn.hw + 3.4) return 3; const p = city.restPad; if (p && x > p.x0 && x < p.x1 && z > p.z0 && z < p.z1) return 1; return 0; }
+    if (z < -1000) { const m = city.mtnRoadAt && city.mtnRoadAt(x, z); if (m) return 1; const n = city.mtnNearest && city.mtnNearest(x, z); if (n && n.d < city.mtn.hw + 3.4) return 3; const p = city.restPad; if (p && x > p.x0 && x < p.x1 && z > p.z0 && z < p.z1) return 1; if (city.padLinkD && city.padLinkD(x, z) < 5) return 1; return 0; }
     if (z > 524 && z < 606) { for (const b of city.bridges || []) if (Math.abs(x - b.x) < b.hw + 0.3) return 1; }
     const i = (x - X0) / C | 0, j = (z - Z0) / C | 0; if (i < 0 || j < 0 || i >= N || j >= N) return 0;
     return G[j * N + i];

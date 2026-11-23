@@ -3,14 +3,14 @@ import { Renderer } from './renderer.js';
 import { City } from './city.js';
 import { GB } from './geo.js';
 import { M4, clamp, lerp, rng } from './math.js';
-import { buildPlayerCar, MIRA_COLORS, MODELS, VARIATIONS, buildHull, buildMiraNPC } from './carmodels.js';
+import { buildPlayerCar, MIRA_COLORS, MODELS, VARIATIONS, buildHull, buildMiraNPC, tractorDef, buildTrailer } from './carmodels.js';
 import { Player } from './player.js';
 import { Traffic } from './traffic.js';
 import { Sound, Music, TRACKS } from './audio.js';
 import { saveGame, loadGame, clearSave } from './save.js';
 import { L, plateUV, renderLayer } from './textures.js';
 import { installNav } from './nav.js';
-import { buildPerson, buildDriver, buildBike, buildMoto, Peds, AGES, SEXES, OUTFITS } from './people.js';
+import { buildPerson, buildDriver, buildBike, buildMoto, Peds, AGES, SEXES, OUTFITS, buildHands, buildStanding } from './people.js';
 import { BIKE_M, MOTO_M } from './traffic.js';
 
 const $ = id => document.getElementById(id);
@@ -20,7 +20,7 @@ const S0 = { ...S };
 const DEV = new URLSearchParams(location.search).has('dev');
 const START = { x: -60, z: -379.9, yaw: Math.PI / 2 };
 // ワープ先：座標は目安。実際の出現位置は lanePos() で最寄り道路の左端車線に合わせる
-const WARPS = [['駅前（スタート地点）', -60, -379.9, Math.PI / 2], ['国道ロードサイド（片側3車線）', 620, -8, Math.PI / 2], ['バイパス（高架の手前）', 1005, -420, 0], ['みなせ峠 入口', -501, -1020, Math.PI], ['道の駅 みなせ峠', 'pad'], ['水瀬川の橋', 2, 470, 0], ['田園地帯', -998, 1300, 0], ['水瀬工業団地', -1700, -5, Math.PI / 2], ['郊外住宅地', -998, -760, 0], ['路面電車の通り（中心部）', -300, 5, -Math.PI / 2]];
+const WARPS = [['駅前（スタート地点）', -60, -379.9, Math.PI / 2], ['国道ロードサイド（片側3車線）', 620, -8, Math.PI / 2], ['バイパス（高架の手前）', 1005, -420, 0], ['みなせ峠 入口', -501, -1020, Math.PI], ['道の駅 みなせ峠', 'pad'], ['水瀬川の橋', 2, 470, 0], ['田園地帯', -998, 1300, 0], ['水瀬工業団地', -1700, -5, Math.PI / 2], ['郊外住宅地', -998, -760, 0], ['旧路面電車通り（中心部・片側3車線）', -300, 6, -Math.PI / 2], ['学園地区（水瀬大学前）', 250, 1252, Math.PI / 2], ['ニュータウン（若葉台）', 1120, 1333, Math.PI / 2]];
 let color = 0, state = 'load', R, city, player, traffic, snd, music, car = {}, npcMesh = [], npcLod = [], meshes = {};
 let gameMin = 7 * 60 + 30, weather = 'clear', wetK = 0, cloudK = 0, rainK = 0, weatherT = 240;
 let camMode = 0, cam = { p: [0, 50, 0], look: [0, 0, 0] }, lightMode = 0, wink = 0, winkYaw = 0, horn = false, T = 0;
@@ -54,16 +54,18 @@ async function boot() {
     city = new City();
     for (const d of city.dyn || []) R.setLayer(d.lay, renderLayer(d.draw)); R.mips(); // 案内標識・電停名・橋名板
     bar.style.width = '45%'; msg.textContent = '車両モデル（50車種）を生成中…'; await frame();
-    for (const m of MODELS) { const g = new GB(); buildHull(m, g, { lod: 0 }); npcMesh[m.id] = R.mesh(g.build()); const g1 = new GB(); buildHull(m, g1, { lod: 1 }); npcLod[m.id] = R.mesh(g1.build()); }
+    for (const m0 of MODELS) { const m = m0.semi ? tractorDef(m0) : m0; const g = new GB(); buildHull(m, g, { lod: 0 }); npcMesh[m.id] = R.mesh(g.build()); const g1 = new GB(); buildHull(m, g1, { lod: 1 }); npcLod[m.id] = R.mesh(g1.build()); if (m0.semi) { const t0 = new GB(); buildTrailer(t0, m0, 0); meshes.trailer = R.mesh(t0.build()); const t1 = new GB(); buildTrailer(t1, m0, 1); meshes.trailerLod = R.mesh(t1.build()); } }
     const pc = buildPlayerCar(); car.def = pc;
-    rebuildDriver = () => { if (car.driver) R.free(car.driver); const g = new GB(); buildDriver(g, driver, pc.eye, pc.steerPos); car.driver = R.mesh(g.build()); };
+    rebuildDriver = () => { for (const k of ['driver', 'hands', 'stand']) if (car[k]) R.free(car[k]); const g = new GB(); buildDriver(g, driver, pc.eye, pc.steerPos); car.driver = R.mesh(g.build()); const h = new GB(); buildHands(h, driver); car.hands = R.mesh(h.build()); const s = new GB(); buildStanding(s, driver); car.stand = R.mesh(s.build()); };
     rebuildDriver();
     for (const k of ['body', 'glass', 'interior', 'wheel', 'wheelR', 'steer', 'needle']) car[k] = R.mesh(pc[k].build());
     { const g = new GB(); buildMiraNPC(g); npcMesh[0] = R.mesh(g.build()); }
     // 二輪車（乗員つき）・歩行者・運転者
     { const g = new GB(); buildBike(g, [1, 1, 1], true, 5); npcMesh[BIKE_M.id] = npcLod[BIKE_M.id] = R.mesh(g.build()); }
     { const g = new GB(); buildMoto(g, [1, 1, 1], 9); npcMesh[MOTO_M.id] = npcLod[MOTO_M.id] = R.mesh(g.build()); }
-    for (let k = 0; k < 12; k++) pedMesh[k] = ['walk0', 'walk1', 'stand'].map(pose => { const g = new GB(); buildPerson(g, { age: k % 3, sex: (k >> 1) % 2, outfit: k % 5 === 4 ? 1 : k % 7 === 6 ? 2 : 0, pose, seed: k + 1 }); return R.mesh(g.build()); });
+    // 歩行者：大人12通り＋子供3通り（ランドセル・黄色い帽子）＋お年寄り3通り（前かがみ・杖）
+    for (let k = 0; k < 18; k++) pedMesh[k] = ['walk0', 'walk1', 'stand'].map(pose => { const g = new GB(); const child = k >= 12 && k < 15, old = k >= 15; buildPerson(g, { age: child ? 0 : old ? 2 : k % 2, sex: (k >> 1) % 2, outfit: k === 7 || k === 10 ? 3 : k % 5 === 4 ? 2 : k % 3 === 1 ? 1 : 0, pose, seed: k + 1, child, cane: old && k !== 16 }); return R.mesh(g.build()); });
+    { const g = new GB(); g.box(-0.55, 0.2, -1.1, 0.55, 1.1, 0.6, { c: [0.95, 0.7, 0.1] }); g.box(-0.5, 1.1, -1.0, 0.5, 2.1, -0.2, { c: [0.2, 0.22, 0.24] }); g.box(-0.45, 0.1, 0.6, -0.4, 2.4, 0.7, { c: [0.3, 0.3, 0.3] }); g.box(0.4, 0.1, 0.6, 0.45, 2.4, 0.7, { c: [0.3, 0.3, 0.3] }); g.box(-0.5, 0.1, 0.7, 0.5, 0.15, 1.6, { c: [0.6, 0.6, 0.6] }); for (const [x, z] of [[-0.5, -0.8], [0.5, -0.8], [-0.5, 0.4], [0.5, 0.4]]) g.cylX(x, 0.22, z, 0.22, 0.15, 8, { c: [0.1, 0.1, 0.1] }); meshes.fork = R.mesh(g.build()); } // フォークリフト
     // 遠景シルエット（読み込み範囲の外にある建物を低ポリの箱で表示）
     for (const ch of city.chunks) { // 遠景：建物の箱＋（山間部は）粗い地形
       const g = new GB(), gt = new GB();
@@ -80,8 +82,9 @@ async function boot() {
     bar.style.width = '60%'; msg.textContent = '周辺エリアを読み込み中…'; await frame();
     player = new Player(city); { const w = warpPos(START.x, START.z, START.yaw); player.reset(w.x, w.z, w.yaw); }
     nav = installNav(city, { $, toast, get player() { return player; } });
-    peds = new Peds(city, rng(77));
     traffic = new Traffic(city, rng(Date.now() & 0xffff));
+    peds = new Peds(city, rng(77)); traffic.peds = peds;
+    player.onReset = () => syncGear();
     snd = new Sound(); music = new Music(snd);
     { const si = snd.init.bind(snd); snd.init = () => { si(); music.init(); music.mode = S.bgm; music.setVol(S.bgmVol); }; }
     const sv = await loadGame();
@@ -95,7 +98,7 @@ async function boot() {
     $('mContinue').hidden = !sv;
     show('title'); state = 'title';
     console.log('city stats', city.stats, 'lotsAI', city.stats.lotsAI, 'aabbs', city.aabbs.length, 'variations', VARIATIONS);
-    if (DEV) window.G = { peds: () => peds, car, odo, hist: () => loop.hist, prof: () => streamChunks.prof, models: MODELS, get player() { return player; }, get traffic() { return traffic; }, city, S, R, setCam: m => { camMode = m; }, setTime: h => { gameMin = h * 60; }, setWeather: w => { S.weather = w; weather = w; }, tp: (x, z, yaw) => player.reset(x, z, yaw, 1000), warp: i => doWarp(i), nav: () => nav, gSpd: () => gSpd, state: () => state, sel: () => openSelect('title'), stats: () => ({ fps: tick.fps, ms: loop.ms, draws: R.stats.draws, tris: R.stats.tris, npc: traffic.cars.length, target: traffic.target, parked: traffic.stats.parkedNow, chunks: city.chunks.filter(c => c.m).length }) };
+    if (DEV) window.G = { M4, trains: t => trains(t ?? T), T: () => T, peds: () => peds, car, odo, hist: () => loop.hist, prof: () => streamChunks.prof, models: MODELS, get player() { return player; }, get traffic() { return traffic; }, city, S, R, setCam: m => { camMode = m; }, setTime: h => { gameMin = h * 60; }, setWeather: w => { S.weather = w; weather = w; }, tp: (x, z, yaw) => player.reset(x, z, yaw, 1000), warp: i => doWarp(i), nav: () => nav, gSpd: () => gSpd, state: () => state, sel: () => openSelect('title'), stats: () => ({ fps: tick.fps, ms: loop.ms, draws: R.stats.draws, tris: R.stats.tris, npc: traffic.cars.length, target: traffic.target, parked: traffic.stats.parkedNow, chunks: city.chunks.filter(c => c.m).length }) };
     requestAnimationFrame(loop);
   } catch (e) { console.error(e); $('err').textContent = 'エラー: ' + e.message + '（再読み込みしてください）'; }
 }
@@ -297,7 +300,8 @@ function warpPos(x, z, yaw) {
   let s = clamp(best.s, 8, e.len - 8);
   const blocked = (p) => [...city.query(p[0], p[1], 3)].some(b => b.kind !== 'x' && b.y1 > 0.3 && p[0] > b.x0 - 1.0 - 0.8 && p[0] < b.x1 + 1.0 + 0.8 && p[1] > b.z0 - 1.0 - 1.7 && p[1] < b.z1 + 1.0 + 1.7);
   let p = city.lanePos(e, k, s);
-  for (let tries = 0; tries < 12 && blocked(p); tries++) { s = clamp(s + 4, 8, e.len - 8); p = city.lanePos(e, k, s); }
+  const blockedAhead = s0 => [0, 2.5, 5, 7.5].some(a => blocked(city.lanePos(e, k, Math.min(e.len - 1, s0 + a)))); // 前方5m以内も空いていること
+  for (let tries = 0; tries < 16 && blockedAhead(s); tries++) { s = clamp(s + 4, 8, e.len - 12); p = city.lanePos(e, k, s); }
   return { x: p[0], z: p[1], yaw: city.headAt(e, s), y: city.yAt(e, s) };
 }
 function clearAround(x, z, r = 6) { for (const c of traffic.cars.slice()) if (!c.persist && (c.x - x) ** 2 + (c.z - z) ** 2 < r * r) traffic.remove(c); }
@@ -356,6 +360,7 @@ function cycleCam() { camMode = (camMode + 1) % 3; toast(['三人称視点', '�
 function cycleLight() { lightMode = (lightMode + 1) % 3; toast('ライト：' + ['自動', 'ON', 'OFF'][lightMode], 900); markToggles(); }
 function markToggles() { $('tCam').textContent = ['視点:後方', '視点:運転席', '視点:ボンネット'][camMode]; $('tLight').textContent = 'ライト:' + ['自動', 'ON', 'OFF'][lightMode]; $('tLight').classList.toggle('on', lightMode === 1); $('tBgm').textContent = S.bgm === 'off' ? 'BGM:OFF' : 'BGM'; }
 function setWink(d) { wink = wink === d ? 0 : d; winkYaw = player.yaw; }
+function syncGear() { if (!$('tRev')) return; const rv = player && player.gear === 'R'; $('tRev').textContent = rv ? 'R バック中' : 'R'; $('tRev').classList.toggle('rev', !!rv); $('gear').classList.toggle('rev', !!rv); $('gear').textContent = rv ? 'R' : 'D'; }
 function toggleRev() { player.gearReq = true; } // 結果は player.gearResult で受け取り、gearFeedback() で知らせる
 function gearFeedback() {
   const r = player.gearResult; if (!r) return; player.gearResult = null;
@@ -376,7 +381,7 @@ function applySave(sv) {
     if (Math.abs(player.y - y) > 3 && !city.allowed(sv.x, sv.z)) { const w = warpPos(START.x, START.z, START.yaw); player.reset(w.x, w.z, w.yaw); }
   }
   if (num(sv.time, 0, 1440)) gameMin = sv.time;
-  if (sv.driver && num(sv.driver.age, 0, 2) && num(sv.driver.sex, 0, 1) && num(sv.driver.outfit, 0, 2)) { driver = { age: sv.driver.age | 0, sex: sv.driver.sex | 0, outfit: sv.driver.outfit | 0 }; rebuildDriver(); }
+  if (sv.driver && num(sv.driver.age, 0, 2) && num(sv.driver.sex, 0, 1) && num(sv.driver.outfit, 0, 2)) { let o = sv.driver.outfit | 0; if (!(sv.v >= 3)) o = [1, 2, 0][o]; driver = { age: sv.driver.age | 0, sex: sv.driver.sex | 0, outfit: o }; rebuildDriver(); } // v2（カジュアル/スーツ/作業着）→v3（普段着/カジュアル/スーツ）
   if (['clear', 'cloudy', 'rain'].includes(sv.weather)) weather = sv.weather;
   if (sv.settings && typeof sv.settings === 'object') for (const k in S0) { const v = sv.settings[k]; if (typeof v === typeof S0[k] && (typeof v !== 'number' || isFinite(v))) S[k] = v; }
   if (!(sv.v >= 2) && S.npc > 2) S.npc = S.npc <= 20 ? 0.7 : S.npc >= 40 ? 1.2 : 1; // v1（台数指定）→ v2（交通量の倍率）
@@ -385,7 +390,7 @@ function applySave(sv) {
 }
 async function doSave() {
   lastSave = T;
-  return saveGame({ v: 2, color, x: player.x, y: player.y, z: player.z, yaw: player.yaw, time: gameMin, weather, driver: { ...driver }, settings: { ...S }, at: Date.now() });
+  return saveGame({ v: 3, color, x: player.x, y: player.y, z: player.z, yaw: player.yaw, time: gameMin, weather, driver: { ...driver }, settings: { ...S }, at: Date.now() });
 }
 
 // ---------------- ミニマップ ----------------
@@ -502,13 +507,16 @@ function tick(dt) {
     cam.look = f2; cam.mode = camMode; near = camMode === 1 ? 0.05 : 0.15; fov = camMode === 1 ? 66 : 62;
   }
   const up = camMode > 0 && state !== 'title' ? [pM[4], pM[5], pM[6]] : [0, 1, 0];
+  if (DEV && window.G && G.camOv) { const o = G.camOv; cam.p = [o[0], o[1], o[2]]; cam.look = [o[3], o[4], o[5]]; }
   const view = M4.lookAt(cam.p, cam.look, up), proj = M4.persp(fov * Math.PI / 180, aspect, near, 4300);
   const vp = M4.mul(proj, view), planes = M4.frustum(vp);
   // 交通
   if (driving || state === 'title') {
     traffic.base = S.npc; traffic.perfK = perfK; traffic.wet = wetK;
     traffic.update(dt, T, env.hour, player, { speedK: rainK > 0.5 ? 0.85 : 1 }, planes);
-    peds.update(dt, state === 'title' ? { x: cam.look[0], z: cam.look[2], vx: 0 } : player, env.hour, city.zoneClass(player.x, player.z), perfK, rainK > 0.5);
+    traffic.drawDist = S.draw; player.hour = env.hour; player.zoneCap = ['res', 'nt', 'gak'].includes(city.zoneClass(player.x, player.z)) ? 70 / 3.6 : 0;
+    if (traffic.events && traffic.events.length) { for (const ev of traffic.events.splice(0)) if (ev.t === 'horn' && Math.hypot(ev.x - player.x, ev.z - player.z) < 60) snd.beep(420, 0.22, 1); }
+    peds.update(dt, state === 'title' ? { x: cam.look[0], z: cam.look[2], vx: 0 } : player, env.hour, city.zoneClass(player.x, player.z), perfK, rainK > 0.5, T, planes, traffic, M4);
   }
   // チャンクの読み込み・解放
   streamChunks();
@@ -594,6 +602,17 @@ function streamChunks() {
     for (const c of city.chunks) { if (c.m) continue; const d = Math.hypot(c.x - tp[0], c.z - tp[2]); if (d < loadR) { const pr = Math.hypot(c.x - ax, c.z - az) * 0.6 + d * 0.4; if (pr < wd) { wd = pr; want = c; } } }
   }
 }
+// 列車（上下線2本）：等速で走り、水瀬駅（ホーム中央 x=100）で10秒停車。列車の中心がホーム中央に来る位置で止まる
+function trains(T) {
+  const out = [];
+  for (const [dir, zc, ph] of [[1, -446.65, 0], [-1, -443.35, 180]]) {
+    const v = 14, D = 4800 + 82, Ds = dir > 0 ? 2541 : 2341, t1 = Ds / v, cyc = D / v + 10, tt = ((T + ph) % cyc + cyc) % cyc;
+    const st = tt >= t1 && tt < t1 + 10, d = tt < t1 ? tt * v : st ? Ds : Ds + (tt - t1 - 10) * v;
+    const x = dir > 0 ? -2482 + d : 2482 - d;
+    out.push({ x, z: zc, yaw: dir > 0 ? 0 : Math.PI, dir, center: x + dir * 41, stopped: st });
+  }
+  return out;
+}
 function drawWorld(env, planes, pM, lightsOn) {
   const r = R, gl = r.gl;
   // 空
@@ -614,7 +633,8 @@ function drawWorld(env, planes, pM, lightsOn) {
     }
   }
   const detD = S.det * (0.6 + 0.4 * perfK); // 重いときは細部（小物・駐車車両）の表示距離も縮める
-  for (const c of vis) { r.draw(c.m.s); if (c.dd < detD) r.draw(c.m.det); }
+  const hrNow = env.hour, ncOn = [0, 1, 2].map(b => city.shopCarsOn(b, hrNow)); // 店舗の駐車車両（閉店後は段階的に帰る）
+  for (const c of vis) { r.draw(c.m.s); if (c.dd < detD) { r.draw(c.m.det); for (let b = 0; b < 3; b++) if (ncOn[b]) r.draw(c.m['nc' + b]); } }
   r.decal(1); for (const c of vis) r.draw(c.m.d1);
   r.decal(3); for (const c of vis) r.draw(c.m.d2); if (env.wet > 0.3) for (const c of vis) r.draw(c.m.pud); r.decal(0); // 水たまりは雨のときだけ
   // 落ち影（建物）と車の接地影
@@ -644,15 +664,13 @@ function drawWorld(env, planes, pM, lightsOn) {
   }
   r.gl.uniform3fv(r.u.uSig, [0, 0, 0]);
   // 歩行者
-  for (const q of peds.list) { const dx = q.x - cam.p[0], dz = q.z - cam.p[2]; if (dx * dx + dz * dz > (perfK < 0.8 ? 50 : 80) ** 2 || !M4.sphereIn(planes, q.x, 1, q.z, 1.2)) continue; r.draw(pedMesh[q.type][q.moving ? ((q.t * 1.3) | 0) % 2 : 2], M4.trs(q.x, 0.13, q.z, q.yaw)); }
+  for (const q of peds.list) { if (!pedMesh[q.type]) continue; const dx = q.x - cam.p[0], dz = q.z - cam.p[2]; if (dx * dx + dz * dz > (perfK < 0.8 ? 50 : 80) ** 2 || !M4.sphereIn(planes, q.x, 1, q.z, 1.2)) continue; r.draw(pedMesh[q.type][q.moving ? ((q.t * 1.3) | 0) % 2 : 2], M4.trs(q.rx ?? q.x, q.onRoad ? 0.01 : 0.13, q.rz ?? q.z, q.yaw)); }
+  // 工業団地のフォークリフトと作業員
+  for (const fk of city.forklifts || []) { const dx = fk.x - cam.p[0], dz = fk.z - cam.p[2]; if (dx * dx + dz * dz > 120 * 120) continue; const k = Math.sin(T * 0.35 + fk.ph), x = fk.x + fk.ax * k * fk.amp, z = fk.z + fk.az * k * fk.amp, yaw = fk.yaw + (Math.cos(T * 0.35 + fk.ph) < 0 ? Math.PI : 0); r.draw(meshes.fork, M4.trs(x, 0, z, yaw)); }
+  for (const w of city.workers || []) { const dx = w.x - cam.p[0], dz = w.z - cam.p[2]; if (dx * dx + dz * dz > 90 * 90) continue; r.draw(pedMesh[w.type][2], M4.trs(w.x, 0, w.z, w.yaw)); }
   // 電車（高架）
   // 2本の列車（上下線）。水瀬駅（ホーム中央 x=100）で10秒停車
-  for (const [dir, zc, ph] of [[1, -446.65, 0], [-1, -443.35, 170]]) {
-    const v = 14, D = 4800 + 82, Ds = dir > 0 ? 2541 : 2341, t1 = Ds / v, cyc = D / v + 10, tt = (T + ph) % cyc;
-    const d = tt < t1 ? tt * v : tt < t1 + 10 ? Ds : Ds + (tt - t1 - 10) * v;
-    const x = dir > 0 ? -2482 + d : 2482 - d;
-    if (Math.abs(x - cam.p[0]) < S.draw + 200) r.draw(meshes.train, M4.trs(x, 0, zc, dir > 0 ? 0 : Math.PI, 0, 0));
-  }
+  for (const t of trains(T)) if (Math.abs(t.x - cam.p[0]) < S.draw + 200) r.draw(meshes.train, M4.trs(t.x, 0, t.z, t.yaw, 0, 0));
   // NPC車両
   const lightsNpc = env.night > 0.35 || rainK > 0.5 ? 1 : 0;
   const mtx = new Float32Array(16);
@@ -663,6 +681,12 @@ function drawWorld(env, planes, pM, lightsOn) {
     const lN = lightsNpc || (c.z < -1600 && city.inTunnelXZ(c.x, c.z)) ? 1 : 0; // トンネル内は昼でも点灯
     if (c.tram) { r.draw(meshes.tram, mtx, null, [lN, 0, 0, 0]); continue; }
     const pl = c.plate ? plateUV(c.plate.cls, c.plate.i) : null;
+    if (c.m.semi && c.tr) { // セミトレーラー：トラクタとトレーラーを連結角を付けて描く
+      const near = dx * dx + dz * dz < 3600, pt = -Math.atan(c.slope || 0), cl = traffic.carL(c, lN);
+      r.draw((near ? npcMesh : npcLod)[c.m.id], M4.trs(c.tr.x, c.y || 0, c.tr.z, c.tr.yaw, pt, 0, mtx), c.tint, [cl[0], 0, cl[2], cl[3]], null, pl ? [pl[0], pl[1], pl[2], 0] : null, 0);
+      r.draw(near ? meshes.trailer : meshes.trailerLod, M4.trs(c.trl.x, c.y || 0, c.trl.z, c.trl.yaw, pt, 0, mtx), c.tint, cl, null, null, c.revOn ? 1 : 0);
+      continue;
+    }
     r.draw((dx * dx + dz * dz < 3600 || c.m.id === 0 ? npcMesh : npcLod)[c.m.id], mtx, c.tint, traffic.carL(c, lN), null, pl ? [pl[0], pl[1], pl[2], 0] : null, c.revOn ? 1 : 0);
     if (c.taxi) r.draw(meshes.andon, M4.trs(c.x, (c.y || 0) + c.m.H, c.z, c.yaw, 0, 0, mtx));
   }
@@ -679,12 +703,12 @@ function drawWorld(env, planes, pM, lightsOn) {
   r.draw(car.interior, pM);
   if (camMode !== 1 || state !== 'drive') r.draw(car.driver, pM); // 運転席視点では自分の体は描かない
   const sp = def.steerPos;
-  r.draw(car.steer, M4.mul(pM, M4.trs(sp[0], sp[1], sp[2], 0, 0.42, -pl.steer * 4)));
+  { const sm = M4.mul(pM, M4.trs(sp[0], sp[1], sp[2], 0, 0.42, -pl.steer * 4)); r.draw(car.steer, sm); r.draw(car.hands, sm); } // 手はハンドルと一緒に回る
   const th = 0.75 * Math.PI + Math.min(140, pl.kmh) / 140 * 1.5 * Math.PI;
   const mp = def.meterPos;
   r.draw(car.needle, M4.mul(pM, M4.trs(mp[0], mp[1], mp[2], 0, 0, th - 1.5 * Math.PI)));
   // 半透明
-  r.blend('alpha'); r.alpha(camMode === 1 && state === 'drive' ? 0.12 : 0.8); r.draw(car.glass, pM, null, null);
+  r.blend('alpha'); r.alpha(camMode === 1 && state === 'drive' ? 0.12 : 0.42); r.draw(car.glass, pM, null, null); // 追走視点でも運転者が見えるよう透過を強めに
   if (env.rainVis > 0.05) { r.alpha(0.35 * env.rainVis); r.draw(meshes.rain, M4.trs(cam.p[0], cam.p[1] - 8 - ((T * 22) % 24) + 12, cam.p[2], 0)); }
   // 工場の煙突の煙
   r.blend('alpha'); gl.depthMask(false);
@@ -705,7 +729,9 @@ function renderSelect(dt, aspect) {
   R.draw(car.body, pM, tint, [0.6, 0, 0, 0]);
   for (const [wx, wz] of def.wheelPos) R.draw(wx < 0 ? car.wheelR : car.wheel, M4.mul(pM, M4.trs(wx, def.p.r, wz, 0, 0, 0)));
   R.draw(car.interior, pM); R.draw(car.driver, pM);
-  R.blend('alpha'); R.alpha(0.6); R.draw(car.glass, pM); R.alpha(1); R.blend(null);
+  { const sp = def.steerPos; R.draw(car.hands, M4.mul(pM, M4.trs(sp[0], sp[1], sp[2], 0, 0.42, 0))); }
+  R.draw(car.stand, M4.trs(1.9, 0, -0.6, 0.55)); // 車の横に立つ運転者（全身プレビュー）
+  R.blend('alpha'); R.alpha(0.4); R.draw(car.glass, pM); R.alpha(1); R.blend(null);
 }
 
 function hud(env, lightsOn, blink) {

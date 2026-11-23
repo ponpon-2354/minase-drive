@@ -19,11 +19,13 @@ export class Player {
     this.assist = true;
   }
   reset(x, z, yaw, cy = 0.5) {
-    Object.assign(this, { x, z, y: this.city ? this.city.groundY(x, z, cy) : 0, yaw, vx: 0, vy: 0, w: 0, steer: 0, rpm: 800, gear: 'D', pitch: 0, roll: 0, pv: 0, rv: 0, wheelRot: 0, slip: 0, hit: 0, accel: 0, braking: false, stopT: 0, holdT: 0, stuckT: 0, stuckP: [x, z], surf: 1, aeb: 0 });
+    Object.assign(this, { x, z, y: this.city ? this.city.groundY(x, z, cy) : 0, yaw, vx: 0, vy: 0, w: 0, steer: 0, rpm: 800, gear: 'D', pitch: 0, roll: 0, pv: 0, rv: 0, wheelRot: 0, slip: 0, hit: 0, accel: 0, braking: false, stopT: 0, holdT: 0, stuckT: 0, stuckP: [x, z], surf: 1, aeb: 0, gearReq: false, gearResult: null, wallPivot: 0, needRescue: false });
+    this.onReset && this.onReset(); // 表示（ギア表示・Rボタン）を実状態に合わせる
   }
   get speed() { return Math.hypot(this.vx, this.vy); }
   get kmh() { return Math.abs(this.vx) * 3.6; }
   step(dt, env, npcs) {
+    this.T0 = (this.T0 || 0) + dt;
     const inp = this.input, g = 9.81;
     // 路面（雨は濡れ具合で連続的にグリップ低下）
     const surf = this.city.surfaceAt ? this.city.surfaceAt(this.x, this.z, this.y) : 1;
@@ -47,6 +49,9 @@ export class Player {
       else if (dir < 0 && v > 0.3) { brk = Math.max(brk, thr); thr = 0; }
       else Fdrive = dir * thr * Math.min(Fmax, P / Math.max(Math.abs(v), 2.5));
       if (dir < 0) Fdrive = clamp(Fdrive, -1400, 0);
+      // 速度の目安（千葉指示）：草地・砂利の農道は約50km/h、住宅街は約70km/h でアクセルが効かなくなる（ブレーキはかけない）
+      const cap = (surf === 0 || surf === 3) ? 50 / 3.6 : this.zoneCap || 0;
+      if (cap && Math.abs(v) > cap - 1.5) Fdrive *= clamp((cap - Math.abs(v)) / 1.5, 0, 1);
     }
     // クリープ：ブレーキを離しているときだけ（AT/CVT車の挙動）
     const creep = thr < 0.05 && brk < 0.05;
@@ -145,7 +150,8 @@ export class Player {
       let pushX = 0, pushZ = 0;
       const yy = this.y;
       for (const p of this.corners()) for (const b of boxes) {
-        if (yy + 1.3 < b.y0 || yy + 0.35 > b.y1 || b.kind === 'p') continue; // 高さ35cm未満の段差（縁石・水路の縁など）は乗り越えられる
+        if (yy + 1.3 < b.y0 || yy + 0.35 > b.y1 || b.kind === 'p') continue;
+        if (b.nb != null && !city.shopCarsOn(b.nb, this.hour ?? 12)) continue; // 閉店後に帰った駐車車両 // 高さ35cm未満の段差（縁石・水路の縁など）は乗り越えられる
         if (p[0] > b.x0 && p[0] < b.x1 && p[1] > b.z0 && p[1] < b.z1) {
           const dl = p[0] - b.x0, dr = b.x1 - p[0], dt2 = p[1] - b.z0, db = b.z1 - p[1], m = Math.min(dl, dr, dt2, db);
           let px = 0, pz = 0;
@@ -181,11 +187,13 @@ export class Player {
     }
     // NPC車両：車体中心どうしを結ぶ方向に確実に押し分け、相手も止める
     const c = Math.cos(this.yaw), s = Math.sin(this.yaw);
-    for (const n of npcs) {
+    const parts = [];
+    for (const n0 of npcs) { if (n0.m.semi && n0.tr) { const S = n0.m.semi; parts.push({ x: n0.tr.x, z: n0.tr.z, yaw: n0.tr.yaw, y: n0.y, m: { L: S.tL, W: n0.m.W }, src: n0 }, { x: n0.trl.x, z: n0.trl.z, yaw: n0.trl.yaw, y: n0.y, m: { L: S.kL, W: n0.m.W }, src: n0 }); } else parts.push(n0); }
+    for (const n of parts) {
       const dx = n.x - this.x, dz = n.z - this.z;
-      if (dx * dx + dz * dz > (n.tram ? 196 : 49) || Math.abs((n.y || 0) - this.y) > 3) continue;
+      if (dx * dx + dz * dz > (n.tram ? 196 : n.m.L > 9 ? 100 : 49) || Math.abs((n.y || 0) - this.y) > 3) continue;
       const nc = Math.cos(n.yaw), ns = Math.sin(n.yaw), nl = n.m.L / 2 - n.m.W / 2, nr = n.m.W / 2;
-      const bs = n.tram ? [-nl, -nl * 0.66, -nl * 0.33, 0, nl * 0.33, nl * 0.66, nl] : [-nl, 0, nl];
+      const bs = n.tram ? [-nl, -nl * 0.66, -nl * 0.33, 0, nl * 0.33, nl * 0.66, nl] : n.m.L > 7 ? [-nl, -nl * 0.66, -nl * 0.33, 0, nl * 0.33, nl * 0.66, nl] : [-nl, 0, nl];
       let deep = 0, px0 = 0, pz0 = 0;
       for (const a of [-1.1, 0, 1.1]) {
         const px = this.x + s * a, pz = this.z + c * a;
@@ -201,7 +209,7 @@ export class Player {
         const l = Math.hypot(px0, pz0) || 1; px0 /= l; pz0 /= l;
         this.x += px0 * deep; this.z += pz0 * deep;
         this.contact(px0, pz0, deep, dt, n.m.L > 6 ? 0.3 : 0.55);
-        n.hitT = 4; n.hazard = 4; n.pushedBy = { x: this.x, z: this.z };
+        const nn = n.src || n; nn.hitT = 4; nn.hazard = 4; nn.pushedBy = { x: this.x, z: this.z };
       }
     }
   }
@@ -216,8 +224,10 @@ export class Player {
         const imp = -vn;
         wx -= vn * nx * (1 + 0.2 * Math.min(1, imp / 5)); wz -= vn * nz * (1 + 0.2 * Math.min(1, imp / 5));
         // 接線方向の摩擦（正面衝突ほど強く減速）
-        const tk = Math.max(0, 1 - imp / Math.max(sp0, 0.1) * 0.6 * massK);
-        wx *= tk * 0.5 + 0.5 * (1 - dt * 2); wz *= tk * 0.5 + 0.5 * (1 - dt * 2);
+        // 当たり続けている間（0.3秒以内の再接触）は、タイヤが向きを戻すぶんの法線成分で何度も減速しないようにする
+        const sus = this.cT != null && this.T0 - this.cT < 0.3 && imp < 2.5; this.cT = this.T0 || 0;
+        const tk = sus ? 1 - Math.min(0.02, imp / Math.max(sp0, 0.1) * 0.05) : Math.max(0, 1 - imp / Math.max(sp0, 0.1) * 0.6 * massK);
+        const fk = tk * 0.5 + 0.5 * (1 - dt * 0.35); wx *= fk; wz *= fk; // こすり続けるときの減速は弱く（ガードレールで止まらず滑る）
         if (imp > 1.2) this.hit = Math.max(this.hit, Math.min(1, imp / 8));
       }
     } else { wx *= -0.2; wz *= -0.2; }
@@ -228,7 +238,7 @@ export class Player {
     // 浅い角度で壁に当たったまま進むときは、車の向きを壁に沿わせて滑らせる（こすったまま止まってしまうのを防ぐ）
     if ((nx || nz) && Math.abs(this.vx) > 0.3) {
       const hx = Math.sin(this.yaw) * Math.sign(this.vx), hz = Math.cos(this.yaw) * Math.sign(this.vx), into = -(hx * nx + hz * nz);
-      if (into > 0.02 && into < 0.8) { let tx = -nz, tz = nx; if (tx * hx + tz * hz < 0) { tx = -tx; tz = -tz; } const want = Math.atan2(tx * Math.sign(this.vx), tz * Math.sign(this.vx)); let d = want - this.yaw; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; this.yaw += clamp(d, -1.6 * dt, 1.6 * dt); }
+      if (into > 0.02 && into < 0.8) { let tx = -nz, tz = nx; if (tx * hx + tz * hz < 0) { tx = -tx; tz = -tz; } const want = Math.atan2(tx * Math.sign(this.vx), tz * Math.sign(this.vx)); let d = want - this.yaw; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; this.yaw += clamp(d, -2.6 * dt, 2.6 * dt); }
     }
     if ((nx || nz) && inp.thr > 0.3 && Math.abs(this.steer) > 0.05) { const sg = Math.sign(this.steer) * (this.gear === 'R' ? -1 : 1); if (Math.abs(this.w) < 0.6) this.w = sg * 0.6; this.wallPivot = 0.15; }
     void depth;

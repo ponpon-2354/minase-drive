@@ -1,6 +1,7 @@
 // 全体マップ画面（ドラッグ・拡大縮小）、目的地設定、最短経路案内（ダイクストラ法）、ミニマップへの経路表示
-const LABELS = [['水瀬駅', -60, -420], ['商店街', -250, -200], ['オフィス街', 250, -250], ['路面電車通り', 0, 25], ['駅前ロータリー', -60, -330], ['国道ロードサイド', 1300, -40], ['水瀬バイパス', 1000, 200], ['水瀬工業団地', -1750, 0], ['郊外住宅地', -1000, -760], ['郊外住宅地', 700, -760], ['水瀬川', 0, 565], ['田園地帯', -1000, 1300], ['田園地帯', 1200, 1300], ['みなせ峠', 0, -1450], ['道の駅 みなせ峠', -470, -1530], ['水瀬トンネル', 0, -1692]];
-const POI_ICON = { bus: ['#2b7', 'バ'], koban: ['#24a', '交'], tram: ['#163', '電'], bridge: ['#864', '橋'] };
+const LABELS = [['水瀬駅', -60, -420], ['商店街', -250, -200], ['オフィス街', 250, -250], ['路面電車通り', 0, 25], ['駅前ロータリー', -60, -330], ['国道ロードサイド', 1300, -40], ['水瀬バイパス', 1000, 200], ['水瀬工業団地', -1750, 0], ['郊外住宅地', -1000, -760], ['郊外住宅地', 700, -760], ['水瀬川', 0, 565], ['田園地帯', -1000, 1300], ['田園地帯', 1200, 1300], ['みなせ峠', 0, -1450], ['道の駅 みなせ峠', -470, -1530], ['水瀬トンネル', 0, -1692], ['学園地区', 500, 1150], ['ニュータウン（若葉台）', 1500, 1150], ['旧水瀬街道', -1250, -760], ['市役所', 250, -250], ['中央公園', -125, 60]];
+const MAJOR = new Set(['station', 'univ', 'school', 'koban', 'temple', 'farm', 'park', 'view', 'hosp']);
+const POI_ICON = { bus: ['#2b7', 'バ'], koban: ['#24a', '交'], bridge: ['#864', '橋'], univ: ['#1d3c6e', '大'], school: ['#1f5d2c', '文'], park: ['#3a8a3a', '園'], conv: ['#1f8a4c', 'コ'], food: ['#c0392b', '食'], shop: ['#b8742a', '店'], temple: ['#555', '卍'], farm: ['#6b8e23', '農'], view: ['#2a6', '展'], station: ['#1d4fa0', '駅'], hosp: ['#c0392b', '病'] };
 
 export function installNav(city, ui) {
   const N = city.nodes, E = city.edges;
@@ -64,9 +65,10 @@ export function installNav(city, ui) {
       if (!dest) { el.classList.remove('on'); return; }
       const dd = Math.hypot(p.x - dest.x, p.z - dest.z);
       if (dd < 50) { ui.toast('目的地に到着しました', 2200); api.clear(); el.classList.remove('on'); return; }
-      if (route && offRoute(p) > 30) offT += dt; else offT = 0;
+      if (route && offRoute(p) > 22) offT += dt; else offT = 0;
       const now = performance.now() / 1000;
-      if ((offT > 2 || !route) && now - lastPlan > 3) { lastPlan = now; offT = 0; const had = !!route; route = plan(p); if (route && had) ui.toast('ルートを再検索しました', 1200); }
+      // ルートを外れたら1秒で再検索（3秒以内に新しいルートを表示）
+      if ((offT > 1 || !route) && now - lastPlan > 1.5) { const t0 = now; lastPlan = now; const had = !!route; if (had) { el.textContent = 'ルートを再検索しています…'; api.lastReroute = { off: t0 - offT }; } offT = 0; route = plan(p); if (route && had) { ui.toast('ルートを再検索しました', 1200); api.lastReroute.done = performance.now() / 1000; } }
       const g = guidance(p);
       el.classList.add('on');
       el.textContent = g ? `${g.turn < 0 ? '⬅ 左折' : g.turn > 0 ? '➡ 右折' : '⬆ 直進'} ${g.d < 1000 ? Math.round(g.d / 10) * 10 + 'm' : (g.d / 1000).toFixed(1) + 'km'}　目的地まで ${(dd / 1000).toFixed(1)}km` : `目的地まで ${(dd / 1000).toFixed(1)}km（ルート外）`;
@@ -97,7 +99,8 @@ export function installNav(city, ui) {
     // 地名・施設
     c.textAlign = 'center'; c.textBaseline = 'middle';
     for (const [n, x, z] of LABELS) { const [sx, sy] = W2S(x, z); c.font = `800 ${14 * dpr}px sans-serif`; c.lineWidth = 4 * dpr; c.strokeStyle = 'rgba(0,0,0,.7)'; c.strokeText(n, sx, sy); c.fillStyle = '#ffe9b8'; c.fillText(n, sx, sy); }
-    if (view.k > 2.2) for (const q of city.pois || []) { const ic = POI_ICON[q.t]; if (!ic) continue; const [sx, sy] = W2S(q.x, q.z); c.fillStyle = ic[0]; c.beginPath(); c.arc(sx, sy, 8 * dpr, 0, 7); c.fill(); c.fillStyle = '#fff'; c.font = `800 ${10 * dpr}px sans-serif`; c.fillText(ic[1], sx, sy); if (view.k > 4 && q.name) { c.font = `700 ${11 * dpr}px sans-serif`; c.fillText(q.name, sx, sy + 16 * dpr); } }
+    // ズーム段階：〜1.2倍＝地区名、〜3倍＝主要施設、3倍〜＝店舗・バス停まで
+    for (const q of city.pois || []) { const ic = POI_ICON[q.t]; if (!ic) continue; if (view.k < 1.2 || (view.k < 3 && !MAJOR.has(q.t))) continue; const [sx, sy] = W2S(q.x, q.z); c.fillStyle = ic[0]; c.beginPath(); c.arc(sx, sy, 8 * dpr, 0, 7); c.fill(); c.fillStyle = '#fff'; c.font = `800 ${10 * dpr}px sans-serif`; c.fillText(ic[1], sx, sy); if ((view.k > 4 || MAJOR.has(q.t)) && q.name) { c.font = `700 ${11 * dpr}px sans-serif`; c.fillText(q.name, sx, sy + 16 * dpr); } }
     // 自車
     const p = ui.player, [px, py] = W2S(p.x, p.z);
     c.save(); c.translate(px, py); c.rotate(Math.PI - p.yaw); c.fillStyle = '#ffb63a'; c.beginPath(); c.moveTo(0, -14 * dpr); c.lineTo(-9 * dpr, 10 * dpr); c.lineTo(0, 5 * dpr); c.lineTo(9 * dpr, 10 * dpr); c.fill(); c.restore();

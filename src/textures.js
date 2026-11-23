@@ -13,6 +13,21 @@ export const FONT = "'Hiragino Kaku Gothic ProN','Hiragino Sans','Noto Sans JP',
 export const SIGNS = [
   ['CONBINI', 'ことりマート', '#ffffff', '#1f8a4c', '24H', '#f2a31b'],
   ['CONBINI2', 'ミドリヤ', '#2457a6', '#ffffff', 'STORE', '#ffd200'],
+  ['CONBINI3', 'ことりマート', '#ffffff', '#1f8a4c', '24H', '#f2a31b'],
+  ['CAFE', 'カフェ こもれび', '#ffffff', '#6b4a2b', 'COFFEE', '#f3d9a4'],
+  ['IZAKAYA', '居酒屋 ほたる', '#ffffff', '#8a1f1f', '炉ばた', '#ffd200'],
+  ['TEISHOKU', '定食 まるや', '#222222', '#f6efe0', 'ごはん処', '#c0392b'],
+  ['BAKERY', 'ベーカリー 麦の穂', '#5a3a1a', '#fbe8c8', 'パン', '#b8742a'],
+  ['CLEANING', 'クリーニング はやせ', '#ffffff', '#1d6fb8', '即日仕上げ', '#ffe25a'],
+  ['BEAUTY', 'ヘアサロン ルミ', '#333333', '#f7d6e0', 'HAIR', '#b04a6e'],
+  ['KARAOKE', 'カラオケ ポップ', '#ffffff', '#7a2bb8', '24H', '#ffd200'],
+  ['FURUGI', '古着屋 ふるる', '#ffffff', '#2f5d50', 'USED', '#f2c14e'],
+  ['SUPER2', 'スーパー わかば', '#ffffff', '#2c9a3e', '新鮮市場', '#ffe25a'],
+  ['CLINIC', 'わかばクリニックモール', '#1d4f8a', '#ffffff', '内科・小児科・歯科', '#2c9a3e'],
+  ['LOGI', 'みなせロジテック', '#ffffff', '#1f3f7a', '物流センター', '#7fd0ff'],
+  ['FOODF', '水瀬フーズ', '#ffffff', '#c0392b', '食品工場', '#ffe25a'],
+  ['MOTORS', 'ひばり自動車整備', '#ffffff', '#333333', '車検・整備', '#f39c12'],
+  ['SEIKI', '東和精機', '#1f3f7a', '#ffffff', '本社工場', '#555555'],
   ['DRUG', 'ドラッグ ハルカ', '#ffe100', '#1b3c8c', '薬', '#e83b2e'],
   ['SUPER', 'スーパー いろは', '#e8412c', '#ffffff', '食品', '#ffffff'],
   ['HOMEC', 'ホームセンター カナメ', '#f28c00', '#ffffff', 'DIY', '#ffffff'],
@@ -82,7 +97,7 @@ export const PLATES = { k580: 4, k480: 1, w500: 4, w300: 2, w400: 1, w100: 1, g5
 const EXTRA = [];
 for (const [cls, n] of Object.entries(PLATES)) for (let k = 0; k < n; k++) EXTRA.push(['PL', cls, k]);
 EXTRA.push(['PLME']);
-export const DYN_N = 48;
+export const DYN_N = 96;
 for (let k = 0; k < DYN_N; k++) EXTRA.push(['DYN', k]);
 const EX0 = names.length + SIGNS.length;
 EXTRA.forEach((e, i) => { if (e[0] === 'PL') L['PL_' + e[1] + '_' + e[2]] = EX0 + i; else if (e[0] === 'PLME') L.PLATE_ME = EX0 + i; else L['DYN' + e[1]] = EX0 + i; });
