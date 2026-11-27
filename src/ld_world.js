@@ -10,11 +10,12 @@ import { City, CH } from './city.js?v=0.9.3';
 import { rng, clamp, lerp } from './math.js?v=0.9.3';
 import { MODELS, pickColor, isCommercial, plateClass } from './carmodels.js?v=0.9.3';
 
-export const DIST_SCALE = 32, TIME_SCALE = 32;
+export const DIST_SCALE = 32, TIME_SCALE = 32; // 通常コース。首都高のみ SEASONS.shutoko.distScale を使用
 export const ROUTE_LEN = 12500;   // 出発点 s=0 から目的地の駐車場入口まで（表示400km）
 const S_START = -150, S_END = ROUTE_LEN + 100, STEP = 2;
 // 休憩施設（表示km：110km・200km・290km）。時速80kmなら出発から1時間23分・2時間30分・3時間38分（どれも4時間より前）
 export const FAC_KM = [['pa', 'PA', 110], ['sa', 'SA', 200], ['michi', 'MICHI', 290]];
+export const ambienceSeason = season => season === 'shutoko' ? 'spring' : season;
 // 道路の横断面（u は進行方向の左が正）：中央分離帯 |u|<0.45、上り（進行方向）は追越車線 u=2.6・走行車線 u=6.1、路肩〜7.85〜9.9、ガードレール 9.95
 export const LANE_U = [6.1, 2.6], EDGE_U = 9.9, ROAD_HW = 10.5;
 
@@ -54,6 +55,19 @@ export const SEASONS = {
     zones: [[-150, 2300, 'snowfield', 'snowfield'], [2300, 3200, 'lake', 'snowfield'], [3200, 4100, 'snowfield', 'hills'], [4100, 4800, 'mount', 'mount'], [4800, 5250, 'hills', 'hills'], [5250, 5500, 'valley', 'valley'], [5500, 11200, 'snowwall', 'snowwall'], [11200, 12700, 'onsen', 'onsen']],
     tunnels: [[4250, 4650, '雪見トンネル']], bridges: [[5300, 5450, '白銀橋']],
     sections: [[-150, '水瀬東IC'], [800, '白銀の雪原'], [2300, '氷鏡湖'], [3200, '雪見野'], [4100, '雪見トンネル'], [5250, '白銀橋'], [5500, '雪の山道'], [11200, '雪灯温泉郷']]
+  },
+  shutoko: {
+    name: '首都高', dest: '調布IC', destLot: '調布IC・出口広場 駐車場', weather: 'clear', fac: ['箱崎PA'],
+    routeLen: 60000, distScale: 41300 / 60000, timeScale: 1, facKm: [['hakozaki','pa',9.7]],
+    grass: [0.46,0.5,0.48], far: [0.52,0.56,0.58], tree: 'green',
+    limits: [[0,12204,60],[12204,14093,60],[14093,15255,40],[15255,21502,40],[21502,34142,60],[34142,39954,60],[39954,48671,60],[48671,60000,80]],
+    curves: [[12204,14093,-9],[14093,15255,15],[15255,21502,-19],[21502,26587,25],[26587,34142,-14],[34142,39954,10],[39954,48671,-8],[48671,60000,4]],
+    elev: [[-150,0],[0,0],[12204,12],[17580,10],[21502,12],[30365,2],[34142,-35],[39954,-30],[40244,10],[48671,5],[54482,5],[60003,0],[60100,0]],
+    zones: [[-150,2034,'cityLo','river'],[2034,12204,'cityLo','river'],[12204,15255,'cityMix','river'],[15255,17580,'cityCore','cityCore'],[17580,20195,'cityCore','cityCore'],[20195,30365,'cityCore','cityCore'],[30365,34142,'park','cityCore'],[34142,39954,'tunnel','tunnel'],[39954,44821,'cityLo','suburb'],[44821,48671,'suburb','suburb'],[48671,60003,'suburb','suburb']],
+    tunnels: [[30365,30583,'青山トンネル'],[34142,39954,'山手トンネル']],
+    bridges: [[218,1162,'荒川大橋'],[8572,12204,'竪川高架'],[12204,13366,'隅田川橋'],[15255,15546,'日本橋川橋']],
+    sections: [[0,'一之江入口'], [1162,'荒川大橋'], [2034,'小松川出入口'], [2615,'小松川JCT'], [8572,'錦糸町出入口'], [9298,'錦糸町本線料金所'], [12204,'両国JCT'], [13947,'清洲橋・浜町'], [14093,'箱崎JCT・箱崎PA'], [15255,'江戸橋JCT・日本橋'], [16417,'宝町'], [16708,'京橋JCT'], [18524,'銀座'], [19904,'汐留'], [20195,'汐留JCT'], [21502,'浜崎橋JCT'], [23173,'芝公園'], [24844,'一ノ橋JCT'], [25716,'飯倉'], [26587,'谷町JCT'], [29348,'高樹町・六本木'], [30365,'青山トンネル'], [32253,'渋谷'], [34142,'大橋JCT'], [37048,'富ヶ谷'], [37629,'初台南'], [39372,'西新宿JCT'], [39954,'山手トンネル出口'], [40244,'初台'], [40680,'幡ヶ谷'], [44821,'永福'], [48671,'高井戸IC・中央道'], [54482,'三鷹本線料金所'], [57388,'深大寺BS'], [60003,'調布IC']],
+    landmarks: [['東京スカイツリー',8572,1,118],['東京タワー',23173,1,105],['六本木ヒルズ',29348,-1,80],['東京都庁',40244,-1,90]]
   }
 };
 
@@ -62,26 +76,27 @@ const smooth = t => t * t * (3 - 2 * t);
 const LM = o => ({ ...o, mat: (o.mat || 0) + 100 });
 const markLM = (gb, n0) => { const a = gb.a; for (let i = n0 + 11; i < a.length; i += 13) if (a[i] < 100) a[i] += 100; }; // GB の頂点（13要素。12番目が mat）
 export class LongWorld {
-  constructor(season) {
+  constructor(season, direction = 'west') {
     const W = Object.create(City.prototype); // City の当たり判定・チャンク・壁の処理を流用（市街地の生成は行わない）
     Object.assign(W, { nodes: [], edges: [], lots: [], aabbs: [], hash: new Map(), walls: [], whash: new Map(), chunks: [], sigHeads: [], pedHeads: [], surfaces: [], tunnels: [], driveways: [], dhash: new Map(), stats: {}, mm: { blds: [], lots: [], lanes: [], polys: [], water: [], green: [] }, global: new GB(), globalDecal: new GB(), mountains: new GB(), dyn: [], bridges: [] });
-    this.W = W; this.season = season; this.D = SEASONS[season]; this.R = rng({ spring: 11, summer: 22, autumn: 33, winter: 44 }[season]);
+    this.W = W; this.season = season; this.direction = direction; this.dir = direction === 'east' ? -1 : 1; this.ambienceSeason = ambienceSeason(season); this.D = this.direction === 'east' ? { ...SEASONS[season], name: '首都高・東行き（調布→一之江）', dest: '一之江入口', destLot: '一之江入口', fac: ['箱崎PA', '永福PA'] } : SEASONS[season]; this.ROUTE_LEN = this.D.routeLen || ROUTE_LEN; this.DIST_SCALE = this.D.distScale || DIST_SCALE; this.TIME_SCALE = this.D.timeScale || TIME_SCALE; this.FAC_KM = this.direction === 'east' ? [['eifuku','pa',31]] : (this.D.facKm || FAC_KM); this.R = rng({ spring: 11, summer: 22, autumn: 33, winter: 44, shutoko: 55 }[season]);
     this.buildRoute(); this.buildChunks(); this.facilities(); this.populate();
     // City と同じ名前で呼ばれるメソッド（main.js・player.js から使われる）を W に生やす
     const self = this;
     Object.assign(W, {
       ld: this, chunkAt: (x, z) => self.chunkAt(x, z), groundY: (x, z, cy) => self.groundY(x, z, cy), terrainY: (x, z) => self.groundY(x, z, 0),
-      surfaceAt: (x, z) => self.surfaceAt(x, z), limitAt: () => ({ lim: 80, kind: 'byp' }), shopCarsOn: () => false, allowed: () => true,
+      surfaceAt: (x, z) => self.surfaceAt(x, z), limitAt: (x, z) => self.limitAt(x, z), shopCarsOn: () => false, allowed: () => true,
       zoneClass: () => (season === 'winter' || season === 'autumn' ? 'mtn' : 'farm'), district: (x, z) => self.sectionName(self.project(x, z).s),
       inTunnelXZ: (x, z) => { const p = self.project(x, z); return Math.abs(p.u) < ROAD_HW && self.inTunnelS(p.s); }, mtnRoadAt: (x, z) => Math.abs(self.project(x, z).u) < ROAD_HW ? {} : null,
       sig: () => 'g', lanePos: () => [0, 0], headAt: () => 0, yAt: () => 0, shopCarsOn2: null
     });
   }
+  limitAt(x, z) { const p = x == null ? { s: 0 } : this.project(x, z); const row = (this.D.limits || [[0, this.ROUTE_LEN, 80]]).find(([a,b]) => p.s >= a && p.s < b); return { lim: row ? row[2] : 80, kind: 'byp' }; }
   // ---------- 路線（中心線） ----------
   buildRoute() {
-    const D = this.D, N = Math.floor((S_END - S_START) / STEP) + 1;
-    const facS = FAC_KM.map(f => f[2] * 1000 / DIST_SCALE); this.facS = facS;
-    const straight = s => facS.some(f => s > f - 260 && s < f + 480) || s < 120 || s > ROUTE_LEN - 150;
+    const D = this.D, N = Math.floor((this.ROUTE_LEN + 100 - S_START) / STEP) + 1;
+    const facS = this.FAC_KM.map(f => f[2] * 1000 / this.DIST_SCALE); this.facS = facS;
+    const straight = s => facS.some(f => s > f - 260 && s < f + 480) || s < 120 || s > this.ROUTE_LEN - 150;
     const S = new Float32Array(N), X = new Float32Array(N), Z = new Float32Array(N), Y = new Float32Array(N), Hd = new Float32Array(N);
     let x = 0, z = 0, h = 0;
     for (let i = 0; i < N; i++) {
@@ -135,6 +150,20 @@ export class LongWorld {
   }
   inTunnelS(s) { return this.D.tunnels.some(([a, b]) => s > a && s < b); }
   inBridgeS(s) { return this.D.bridges.some(([a, b]) => s > a && s < b); }
+  // 対象地点の前後50mにある道路中心線ポリラインからの最小距離。
+  pointRoadClearance(x, z, s, span = 50) {
+    let best2 = Infinity;
+    for (let q = Math.max(S_START, s - span); q < Math.min(this.ROUTE_LEN + 100, s + span); q += 2) {
+      const a = this.at(q), b = this.at(q + 2), dx = b.x - a.x, dz = b.z - a.z;
+      const t = clamp(((x - a.x) * dx + (z - a.z) * dz) / (dx * dx + dz * dz || 1), 0, 1);
+      const ex = x - (a.x + dx * t), ez = z - (a.z + dz * t), d2 = ex * ex + ez * ez;
+      if (d2 < best2) best2 = d2;
+    }
+    return Math.sqrt(best2);
+  }
+  footprintClear(corners, s, clearance = 13) {
+    return corners.every(([x, z]) => this.pointRoadClearance(x, z, s) >= clearance);
+  }
   sectionName(s) { let n = this.D.sections[0][1]; for (const [a, nm] of this.D.sections) if (s >= a) n = nm; return n; }
   // ---------- 地形 ----------
   zoneW(s, side) { // 片側の地形タイプの重み（境目は120mでなめらかに切り替え）
@@ -146,6 +175,8 @@ export class LongWorld {
     const n = this.noise(s, a), e = Math.max(0, a - 12);
     switch (t) {
       case 'farm': case 'snowfield': case 'town': case 'onsen': case 'village': case 'harbor': return ry - 0.6 + Math.min(e * 0.02, 2) + n * Math.min(1, e / 60) * 1.5 + (a > 260 ? (a - 260) * 0.25 : 0);
+      case 'park': return ry - 9 + n * Math.min(1, e / 80) * 0.3;
+      case 'city': case 'cityCore': case 'cityMix': case 'cityLo': case 'suburb': case 'cityground': return ry - 9 + Math.min(e * 0.005, 0.8) + n * Math.min(1, e / 80) * 0.25 + (a > 180 ? (a - 180) * 0.12 : 0);
       case 'plateau': return ry - 0.5 + n * Math.min(1, e / 40) * 3 + Math.max(0, a - 180) * 0.2;
       case 'river': return a < 40 ? ry - 0.6 - e * 0.03 : a < 95 ? ry - 4.5 : ry - 0.6 + Math.min((a - 95) * 0.05, 3) + n * 1.5;
       case 'lake': return a < 25 ? ry - 0.6 - e * 0.08 : ry - 2.2;
@@ -166,7 +197,7 @@ export class LongWorld {
     const ry = this.roadY(s), a = Math.abs(u), side = u >= 0 ? 1 : -1;
     // 休憩施設の敷地（左側 u=10〜135）と、出発地・目的地の広場は平ら
     for (const f of this.fac || []) if (f.side * u > 9 && f.side * u < 135 && s > f.s - 230 && s < f.s + 450) { const d = Math.max(0, f.side * u - 120, f.s - 200 - s, s - (f.s + 420)); return f.y - 0.05 + d * 0.3; }
-    if (s > ROUTE_LEN - 20 || s < -100) return ry - 0.05;
+    if (s > this.ROUTE_LEN - 20 || s < -100) return ry - 0.05;
     const w = this.zoneW(s, side); let h = 0; for (const t in w) h += w[t] * this.typeH(t, s, a, ry);
     // 修正104：休憩施設の手前 600m は、施設側の山・雪の壁を少しずつ低くして、遠くから建物と看板が見えるようにする（崖や雪の壁で隠れてポップインしない）
     for (const f of this.fac || []) if (f.side * u > 12 && f.side * u < 260 && s > f.s - 600 && s <= f.s - 230) { const t = smooth(clamp((s - (f.s - 600)) / 300, 0, 1)), flat = Math.min(h, ry - 0.4 + Math.max(0, f.side * u - 150) * 0.08); h = lerp(h, flat, t); }
@@ -176,6 +207,7 @@ export class LongWorld {
   }
   groundKind(s, u) {
     const a = Math.abs(u), w = this.zoneW(s, u >= 0 ? 1 : -1), season = this.season; let best = 'hills', bw = 0; for (const t in w) if (w[t] > bw) { bw = w[t]; best = t; }
+    if (season === 'shutoko' && best !== 'river' && best !== 'tunnel') return 'cityground';
     if (season === 'winter') return best === 'lake' && a > 25 ? 'ice' : 'snow';
     if ((best === 'sea' && a > 16) || best === 'bay') return 'sand';
     if (best === 'gorge' && a > 22) return 'rock';
@@ -187,23 +219,24 @@ export class LongWorld {
   groundY(x, z, cy) {
     const p = this.project(x, z), a = Math.abs(p.u);
     const f = this.facAt(p.s, p.u); if (f) return f.y;
-    if (p.s > ROUTE_LEN - 10 && p.s < ROUTE_LEN + 120 && a < 60) return this.endY;
+    if (p.s > this.ROUTE_LEN - 10 && p.s < this.ROUTE_LEN + 120 && a < 60) return this.endY;
     if (a <= ROAD_HW) return this.roadY(p.s);
     return this.terrainH(p.s, p.u);
   }
   surfaceAt(x, z) {
     const p = this.project(x, z), a = Math.abs(p.u);
     if (this.facAt(p.s, p.u)) return 1;
-    if (p.s > ROUTE_LEN - 10 && p.s < ROUTE_LEN + 120 && a < 50) return 1;
+    if (p.s > this.ROUTE_LEN - 10 && p.s < this.ROUTE_LEN + 120 && a < 50) return 1;
     if (a <= 7.9) return 1;
     if (a <= EDGE_U) return this.season === 'winter' ? 3 : 1; // 冬は路肩が圧雪（少し滑る）
     return 0;
   }
   // 休憩施設の舗装の範囲（減速車線・駐車場・加速車線）にいれば施設を返す
   facAt(s, u) {
-    for (const f of this.fac || []) { const lz = s - f.s, lx = u * f.side;
-      if (lz > -170 && lz < 420 && lx > 9.0 && lx < 13.6) { if (lz > -60 && lz < 290) return f; const t = lz < 0 ? (lz + 170) / 110 : (420 - lz) / 130; if (lx < 9.9 + 3.6 * clamp(t, 0, 1)) return f; }
-      if (lz > -5 && lz < 225 && lx >= 13.6 && lx < 112) return f; }
+    for (const f of this.fac || []) { const lz = (s - f.s) * this.dir, lx = u * f.side;
+      if (this.season === 'shutoko') { if (lz > -35 && lz < 75 && lx > 9 && lx < 21) return f; }
+      else if (lz > -170 && lz < 420 && lx > 9.0 && lx < 13.6) { if (lz > -60 && lz < 290) return f; const t = lz < 0 ? (lz + 170) / 110 : (420 - lz) / 130; if (lx < 9.9 + 3.6 * clamp(t, 0, 1)) return f; }
+      if (this.season !== 'shutoko' && lz > -5 && lz < 225 && lx >= 13.6 && lx < 112) return f; }
     return null;
   }
   // ---------- チャンク ----------
@@ -224,18 +257,18 @@ export class LongWorld {
   }
   // ---------- 生成 ----------
   facilities() {
-    const D = this.D; this.fac = FAC_KM.map(([id, type, km], i) => { const s = km * 1000 / DIST_SCALE; return { id, type, km, s, side: 1, name: D.fac[i], y: this.roadY(s + 110) }; });
-    this.endY = this.roadY(ROUTE_LEN);
+    const D = this.D; this.fac = this.FAC_KM.map(([id, type, km], i) => { const baseS = km * 1000 / this.DIST_SCALE, eastPA = id === 'eifuku', s = baseS; return { id, type, km, s, side: eastPA ? -1 : 1, name: eastPA ? '永福PA' : D.fac[i], y: this.roadY(s + 110) }; });
+    this.endY = this.roadY(this.direction === 'east' ? 0 : this.ROUTE_LEN);
   }
   populate() {
     const R = this.R, season = this.season, D = this.D;
     // 区間ごと（50m）に道路・地形・沿道の景観を組み立てる
-    for (let s = S_START; s < S_END; s += 50) { const s0 = s, s1 = Math.min(S_END, s + 50); this.add((s0 + s1) / 2, g => this.segment(g, s0, s1)); }
+    for (let s = S_START; s < this.ROUTE_LEN + 100; s += 50) { const s0 = s, s1 = Math.min(this.ROUTE_LEN + 100, s + 50); this.add((s0 + s1) / 2, g => this.segment(g, s0, s1)); }
     // 壁（ガードレール・中央分離帯）
-    for (let s = S_START; s < ROUTE_LEN + 5; s += 8) {
+    for (let s = S_START; s < this.ROUTE_LEN + 5; s += 8) {
       const a = this.pos(s, 0), b = this.pos(s + 8, 0), y0 = Math.min(a[1], b[1]) - 1.5, y1 = Math.max(a[1], b[1]) + 1.3;
       this.W.addWall(a[0], a[2], b[0], b[2], y0, y1); // 中央分離帯（反対車線へは出られない）
-      for (const side of [1, -1]) { if (side > 0 && this.fac.some(f => s + 8 > f.s - 170 && s < f.s + 420)) continue;
+      for (const side of [1, -1]) { if (this.fac.some(f => side === f.side && s + 8 > f.s - 170 && s < f.s + 420)) continue;
         const p = this.pos(s, side * 9.95), q = this.pos(s + 8, side * 9.95); this.W.addWall(p[0], p[2], q[0], q[2], y0, y1); }
     }
     // 出発地の奥（s=-150）と、目的地の駐車場の囲い
@@ -243,6 +276,208 @@ export class LongWorld {
     for (const f of this.fac) this.facility(f);
     this.startArea(); this.destination(); this.destFar(); this.signs(); this.farView();
     this.feats = this.buildFeats();
+    if (this.season === 'shutoko') { this.shutokoLandmarks(); this.shutokoJcts(); this.shutokoRoadside(); }
+  }
+  shutokoRoadside() {
+    const K = km => km * 1000 / this.DIST_SCALE;
+    // 川・運河は個別の水面として道路脇〜高架下に通す（汎用ビルは水面の正面に置かない）。
+    for(const [a,b,side,width] of [[.15,.8,1,44],[2.5,6.0,1,17],[8.4,10.5,-1,30]]) {
+      for(let km=a;km<b;km+=.1){const s=K(km),e=K(Math.min(km+.1,b));this.add(s,g=>{const p=this.pos(s,side*11,-2),q=this.pos(e,side*11,-2),r=this.pos(e,side*(11+width),-2),t=this.pos(s,side*(11+width),-2);g.d2.quadN(p,q,r,t,[0,1,0],{c:[.22,.48,.59],lay:L.WATER});});}
+    }
+    // 荒川斜張橋：主塔を中央に立て、控えめな扇形ケーブル。橋面の視界を保つ。
+    this.add(K(.48),g=>{const s=K(.48),p=this.pos(s,0),top=p[1]+36;g.s.box(p[0]-2,p[1]-2,p[2]-2,p[0]+2,top,p[2]+2,{c:[.68,.7,.72]});for(let d=-36;d<=36;d+=6){const q=this.pos(K(.48)+d,0);g.s.beam([p[0],top,p[2]],[q[0],q[1]+.5,q[2]],.5,{c:[.93,.94,.95]});}});
+    // 両国国技館：低い大建築と緑の寄棟屋根をJCT右下に置く。
+    this.add(K(8.4),g=>{const s=K(8.4),p=this.pos(s,-27),y=p[1]-4;g.s.box(p[0]-23,y,p[2]-27,p[0]+23,y+13,p[2]+27,{c:[.76,.74,.67]});g.s.gable(p[0]-24,p[2]-28,p[0]+24,p[2]+28,y+13,9,{c:[.22,.38,.26],lay:L.ROOF,tw:2,gc:[.76,.74,.67]});});
+    // 実在する公園・緑地だけを道路脇の樹木の塊として配置する。
+    const groves=[[13.8,1,600,42],[28.6,1,1000,70],[34.2,-1,300,34],[37.5,-1,360,38],[39.8,1,800,55]];
+    for(const [km,side,len,width] of groves){const center=K(km),half=len/(2*this.DIST_SCALE);for(let ss=center-half;ss<center+half;ss+=34)this.add(ss,g=>{for(let i=0;i<3;i++){const s=ss+this.R()*28,u=side*(15+this.R()*width),p=this.pos(s,u),y=this.terrainH(s,u);this.tree(g.s,'green',p[0],y,p[2],1.6+this.R()*.8,this.R);}});}
+    // 本線通過型のETC料金所。側道へ進入しない門型設備。
+    for (const [km, label] of [[6.4, '錦糸町本線料金所'], [14.05, '料金所'], [37.5, '三鷹本線料金所']]) {
+      const s = K(km), sign = this.greenSign([label, 'ETC'], { scale: .8 });
+      this.add(s, g => { const L0=this.pos(s,10.4), R0=this.pos(s,-10.4), at=this.at(s);
+        if (km === 14.05) { for (const u of [-9.5,-3.2,3.2,9.5]) { const q=this.pos(s,u); g.s.box(q[0]-.22,q[1],q[2]-.25,q[0]+.22,q[1]+4.1,q[2]+.25,{c:[.62,.64,.65]}); g.s.box(q[0]-1.2,q[1]+3.2,q[2]-.8,q[0]+1.2,q[1]+4.1,q[2]+.8,{c:[.2,.46,.38]}); } }
+        for (const p of [L0,R0]) g.s.box(p[0]-.35,p[1],p[2]-.35,p[0]+.35,p[1]+6.4,p[2]+.35,{c:[.65,.67,.69]});
+        g.s.beam([L0[0],L0[1]+6.4,L0[2]],[R0[0],R0[1]+6.4,R0[2]],.35,{c:[.66,.68,.7]});
+        for (const u of (km === 14.05 ? [-9,-6,-3,0,3,6,9] : [-6.8,-2.3,2.3,6.8])) { const q=this.pos(s,u); g.det.box(q[0]-.55,q[1]+.1,q[2]-.6,q[0]+.55,q[1]+2.6,q[2]+.6,{c:[.78,.78,.75]}); }
+        const a=this.pos(s,8),b=this.pos(s,2),n=[-Math.sin(at.h),0,-Math.cos(at.h)]; g.s.panel(a[0],a[2],b[0],b[2],a[1]+6.5,a[1]+9,.05,n,{c:[1,1,1],mat:16,lay:sign});
+      });
+    }
+    // 汐留のガラス高層群は右至近（-側）。幅を持たせて直接配置する。
+    for (const [s,side,color,h,w] of [[K(14.35),-1,[.48,.62,.68],78,13],[K(14.65),-1,[.58,.68,.72],98,16],[K(14.78),-1,[.52,.6,.67],86,14]]) {
+      this.add(s,g=>{const q=this.pos(s,side*21),y=q[1]-6;g.s.box(q[0]-w/2,y,q[2]-8,q[0]+w/2,y+h,q[2]+8,{c:color,side:{lay:L.OFFICE,tw:5,th:16}});});
+    }
+    // 浜崎橋JCTの太い橋脚は路側すれすれ（走行レーン外）。
+    for(const km of [14.8,14.88]) this.add(K(km),g=>{const s=K(km),p=this.pos(s,12.6),y=this.terrainH(s,12.6);g.s.box(p[0]-1.8,y,p[2]-2.1,p[0]+1.8,y+18,p[2]+2.1,{c:[.58,.6,.61]});});
+    // 芝公園の緑地と増上寺を左手の低い位置に置く。
+    this.add(K(15.65),g=>{for(let i=0;i<13;i++){const s=K(15.2+i*.075),p=this.pos(s,13.5+(i%3)*2);this.tree(g.s,'green',p[0],this.terrainH(s,13.5)-.2,p[2],1.4,this.R);}const s=K(15.7),p=this.pos(s,22),y=p[1]-4;g.s.box(p[0]-9,y,p[2]-8,p[0]+9,y+8,p[2]+8,{c:[.72,.68,.57]});g.s.gable(p[0]-10,p[2]-9,p[0]+10,p[2]+9,y+8,5,{c:[.56,.24,.18],lay:L.KAWARA,tw:2,gc:[.72,.68,.57]});});
+    // 東京タワーは左手至近。脚の開いた格子塔として作る（赤白の帯＋展望台2段）。
+    this.add(K(15.95),g=>{const s=K(15.95),p=this.pos(s,16),y=p[1]-5,H=108;
+      for(const [sx,sz] of [[-1,-1],[1,-1],[-1,1],[1,1]]) g.s.beam([p[0]+sx*11,y,p[2]+sz*11],[p[0]+sx*2.6,y+H,p[2]+sz*2.6],.85,{c:[.85,.3,.16]});
+      for(let yy=10;yy<H;yy+=13){const t=yy/H,w=11*(1-t)+2.6*t,band=Math.round(yy/13)%2===0?[.92,.9,.86]:[.85,.3,.16];
+        g.s.beam([p[0]-w,y+yy,p[2]-w],[p[0]+w,y+yy,p[2]-w],.5,{c:band});g.s.beam([p[0]-w,y+yy,p[2]+w],[p[0]+w,y+yy,p[2]+w],.5,{c:band});
+        g.s.beam([p[0]-w,y+yy,p[2]-w],[p[0]-w,y+yy,p[2]+w],.5,{c:band});g.s.beam([p[0]+w,y+yy,p[2]-w],[p[0]+w,y+yy,p[2]+w],.5,{c:band});}
+      g.s.box(p[0]-5.5,y+52,p[2]-5.5,p[0]+5.5,y+58,p[2]+5.5,{c:[.88,.86,.8]});
+      g.s.box(p[0]-4,y+80,p[2]-4,p[0]+4,y+85,p[2]+4,{c:[.88,.86,.8]});
+      g.s.box(p[0]-.7,y+H,p[2]-.7,p[0]+.7,y+H+14,p[2]+.7,{c:[.85,.3,.16]});});
+    // 森タワーは右側の路側に寄せた先細りの高層。
+    this.add(K(20.0),g=>{const s=K(20.0),p=this.pos(s,-12),y=this.terrainH(s,-12);for(let yy=0;yy<92;yy+=4){const w=13*(1-.42*yy/92),c=yy%8===0?[.39,.46,.5]:[.5,.56,.59];g.s.box(p[0]-w,y+yy,p[2]-w,p[0]+w,y+yy+4,p[2]+w,{c,side:{lay:L.OFFICE,tw:5,th:14}});}g.s.box(p[0]-9,y+91,p[2]-9,p[0]+9,y+96,p[2]+9,{c:[.88,.9,.86]});g.s.box(p[0]-9.2,y+90.4,p[2]-9.2,p[0]+9.2,y+91.5,p[2]+9.2,{c:[.9,.91,.87]});g.s.box(p[0]-7.8,y+96,p[2]-7.8,p[0]+7.8,y+97.2,p[2]+7.8,{c:[.45,.51,.54],side:{lay:L.OFFICE,tw:5,th:14}});});
+    // 箱崎はビル3階のPA。対向側に見える永福PAは休憩施設データに含めない。
+    const s=K(9.7), p=this.pos(s,-30); this.add(s,g=>{ const q=this.pos(s,-30); g.s.box(q[0]-11,q[1]-6,q[2]-20,q[0]+11,q[1]+9,q[2]+20,{c:[.62,.65,.67],side:{lay:L.OFFICE,tw:5,th:12}}); g.s.box(q[0]-12,q[1]+9,q[2]-21,q[0]+12,q[1]+10,q[2]+21,{c:[.38,.4,.42]}); g.s.box(q[0]-4,q[1]+10,q[2]-14,q[0]+4,q[1]+11,q[2]+14,{c:[.12,.42,.3]}); });
+    // 7号左手の縦スリット入りコンクリート施設と、両国JCTの低い右側擁壁。
+    const seven=K(1.55),sp=this.pos(seven,36),sf=[[sp[0]-8,sp[2]-24],[sp[0]+8,sp[2]-24],[sp[0]-8,sp[2]+24],[sp[0]+8,sp[2]+24]];if(this.footprintClear(sf,seven,13))this.add(seven,g=>{const p=this.pos(seven,36);g.s.box(p[0]-8,this.terrainH(seven,36),p[2]-24,p[0]+8,this.terrainH(seven,36)+18,p[2]+24,{c:[.65,.67,.67]});for(let z=-20;z<=20;z+=5)g.s.box(p[0]-8,this.terrainH(seven,36)+2,p[2]+z,p[0]-7.7,this.terrainH(seven,36)+16,p[2]+z+1.4,{c:[.38,.4,.41]});});
+    // 永福PAは上り線専用。下り本線の反対側に遠景の建物と案内板だけ置く。
+    const eif=K(30.85), ep=this.pos(eif,-17);
+    if(this.direction!=='east') this.add(eif,g=>{const q=this.pos(eif,-17);g.s.box(q[0]-11,q[1],q[2]-20,q[0]+11,q[1]+10,q[2]+20,{c:[.66,.67,.68],side:{lay:L.OFFICE,tw:4,th:9}});const sign=this.greenSign(['永福PA','上り線'],{scale:.8}),a=this.pos(eif,-11),b=this.pos(eif,-16);g.s.panel(a[0],a[2],b[0],b[2],a[1]+10,a[1]+13,.05,[-Math.sin(this.at(eif).h),0,-Math.cos(this.at(eif).h)],{c:[1,1,1],mat:16,lay:sign});void ep;});
+    // 大橋JCTの屋根付き円筒ドラムと屋上緑化帯。旧開放ループは生成しない。
+    const d=K(23.5), at=this.at(d), center=this.pos(d,110), radius=75;
+    this.add(d,g=>{ for(let i=0;i<48;i++){ const a=i*Math.PI/24,b=(i+1)*Math.PI/24, s0=d+Math.cos(a)*radius, u0=110+Math.sin(a)*radius, s1=d+Math.cos(b)*radius,u1=110+Math.sin(b)*radius, p0=this.pos(s0,u0),p1=this.pos(s1,u1); g.s.quadN([p0[0],p0[1]-16,p0[2]],[p1[0],p1[1]-16,p1[2]],[p1[0],p1[1]+9,p1[2]],[p0[0],p0[1]+9,p0[2]],[0,0,1],{c:[.57,.6,.62]}); g.s.quadN([p0[0],p0[1]+9,p0[2]],[p1[0],p1[1]+9,p1[2]],[p1[0],p1[1]+10,p1[2]],[p0[0],p0[1]+10,p0[2]],[0,1,0],{c:[.28,.45,.3]}); g.s.quadN([p0[0],p0[1]-2,p0[2]],[p1[0],p1[1]-2,p1[2]],[p1[0],p1[1]-1.4,p1[2]],[p0[0],p0[1]-1.4,p0[2]],[0,0,1],{c:[.45,.48,.5]}); } });
+    // 掘割：銀座〜汐留の両側に連続擁壁と数本の街路橋。
+    for (let s0=K(12.1);s0<K(13.9);s0+=50) this.add(s0,g=>{for(const side of [-1,1]){const p=this.pos(s0,side*11),q=this.pos(s0+50,side*11); g.s.quadN([p[0],p[1],p[2]],[q[0],q[1],q[2]],[q[0],q[1]+5,q[2]],[p[0],p[1]+5,p[2]],[side,0,0],{c:[.55,.57,.59]});} if(Math.round(s0/100)%3===0){const p=this.pos(s0,-13),q=this.pos(s0,13),y=this.roadY(s0)+7;g.s.beam([p[0],y,p[2]],[q[0],y,q[2]],1.1,{c:[.42,.44,.45]});for(const u of [-4,4]){const c=this.pos(s0,u);g.s.box(c[0]-.45,y-7,c[2]-.45,c[0]+.45,y,c[2]+.45,{c:[.58,.59,.59]});}for(let u=-8;u<=8;u+=4){const c=this.pos(s0,u);g.det.box(c[0]-.06,y-.12,c[2]-.06,c[0]+.06,y-.02,c[2]+.06,{c:[1,.86,.58],mat:8});}}});
+    // 谷町JCTの先の短い蓋掛けと出口案内。
+    for(let s0=K(18.55);s0<K(18.9);s0+=10)this.add(s0,g=>{const a=this.pos(s0,-10.4,6),b=this.pos(s0,10.4,6),c=this.pos(s0+10,-10.4,6),d=this.pos(s0+10,10.4,6);g.s.quadN(a,b,d,c,[0,-1,0],{c:[.58,.59,.59]});for(const side of [-1,1]){const p=this.pos(s0,side*10.4),q=this.pos(s0+10,side*10.4);g.s.quadN(p,q,[q[0],q[1]+6,q[2]],[p[0],p[1]+6,p[2]],[side,0,0],{c:[.57,.58,.59]});}});
+    const gateSign=this.greenSign(['3 東名・渋谷'],{bg:'#006b3c',scale:.9}); this.gantry(K(18.92),gateSign);
+    // 西新宿JCT標識は山手トンネル内の門型設備。
+    const westSign=this.greenSign(['4 中央道・高井戸'],{bg:'#006b3c',scale:.9}); this.gantry(K(27.1),westSign);
+    // 六本木〜大橋手前の広告板と、大橋JCT手前の緑縁取り遮音壁。
+    for(const [km,side,col,label] of [[20.1,1,[.84,.25,.2],'六本木'],[20.45,1,[.9,.42,.62],'広告'],[20.8,1,[.18,.46,.6],'渋谷']]){const s=K(km),lay=this.greenSign([label],{bg:'#ffffff',scale:.75});this.add(s,g=>{const p=this.pos(s,side*15,9),a=this.pos(s,side*15-5.5,9.7),b=this.pos(s,side*15+5.5,9.7);g.s.box(p[0]-6,p[1],p[2]-.25,p[0]+6,p[1]+3,p[2]+.25,{c:col});g.s.panel(a[0],a[2],b[0],b[2],p[1]+.6,p[1]+2.5,.04,[-Math.sin(this.at(s).h),0,-Math.cos(this.at(s).h)],{c:[1,1,1],mat:16,lay});});}
+    for(let s0=K(22.9);s0<K(23.5);s0+=50)this.add(s0,g=>{const p=this.pos(s0,10.3,1.1),q=this.pos(s0+50,10.3,1.1),p2=this.pos(s0,10.3,5.5),q2=this.pos(s0+50,10.3,5.5);g.s.quadN(p,q,q2,p2,[1,0,0],{c:[.78,.81,.82]});g.s.beam(p2,q2,.18,{c:[.18,.48,.31]});});
+    const routePole=this.greenSign(['渋谷線 3'],{bg:'#006b3c',scale:.65});this.add(K(23.15),g=>{const s=K(23.15),p=this.pos(s,10.7),q=this.pos(s,11.5);g.s.box(p[0]-.12,p[1],p[2]-.12,p[0]+.12,p[1]+5,p[2]+.12,{c:[.62,.64,.64]});g.s.panel(p[0],p[2],q[0],q[2],p[1]+3.2,p[1]+4.5,.05,[-Math.sin(this.at(s).h),0,-Math.cos(this.at(s).h)],{c:[1,1,1],mat:16,lay:routePole});});
+    // 4号線高井戸出口の路面案内ペイント。
+    const paintS=K(32.8); this.add(paintS,g=>{for(const u of [2.8,5.8]){const a=this.pos(paintS-3,u-1,.035),b=this.pos(paintS-3,u+1,.035),c=this.pos(paintS+7,u+1,.035),d=this.pos(paintS+7,u-1,.035);g.d2.quadN(a,b,c,d,[0,1,0],{c:[1,1,1]});}const p=this.pos(paintS,4.3,.04);g.s.setXf(p[0],p[1],p[2],this.at(paintS).h);g.s.box(-2,.01,-3,2,.04,3,{c:[1,1,1]});g.s.clearXf();});
+    // 左側の倉庫風建物、赤レンガ風ビル、初台の丸みを持つ高層ビル。
+    for(const [km,side,u,h,w,d,col] of [[9.7,1,35,26,34,38,[.83,.84,.82]],[12.35,-1,32,31,22,20,[.62,.28,.2]],[27.7,1,30,105,22,18,[.64,.69,.72]]]) {const s=K(km),p=this.pos(s,side*u),corners=[[p[0]-w/2,p[2]-d/2],[p[0]+w/2,p[2]-d/2],[p[0]-w/2,p[2]+d/2],[p[0]+w/2,p[2]+d/2]];if(this.footprintClear(corners,s,13))this.add(s,g=>{const q=this.pos(s,side*u),y=this.terrainH(s,side*u);g.s.box(q[0]-w/2,y,q[2]-d/2,q[0]+w/2,y+h,q[2]+d/2,{c:col,side:{lay:L.OFFICE,tw:5,th:14}});if(km===27.7){g.s.box(q[0]-w/2+3,y+h,q[2]-d/2+3,q[0]+w/2-3,y+h+5,q[2]+d/2-3,{c:[.8,.84,.86]});}if(km===27.7)for(let j=0;j<4;j++){const z=q[2]-d/2+j*d/4;g.s.beam([q[0]-w/2,y+h-2,z],[q[0]+w/2,y+h-2,z],.22,{c:[.78,.8,.8]});}});}
+    // スカイツリー：近づくほど大きく見えるよう、左奥に段階配置する（farGBでは視認できなかった）。
+    for (const [km,u,h] of [[3.2,120,80],[5.6,95,120],[7.6,72,165],[8.6,58,205]]) {
+      const s=K(km); this.add(s,g=>{ const p=this.pos(s,u), y=p[1]-6, w=7+15*(h/205);
+        for(let yy=0;yy<h;yy+=10){ const t=yy/h, ww=w*(1-.55*t); g.s.box(p[0]-ww/2,y+yy,p[2]-ww/2,p[0]+ww/2,y+yy+10,p[2]+ww/2,{c:[.6,.65,.7]}); }
+        for(const t of [.52,.74]){ const ww=w*(1-.55*t)+5; g.s.box(p[0]-ww/2,y+h*t,p[2]-ww/2,p[0]+ww/2,y+h*t+4,p[2]+ww/2,{c:[.48,.54,.6]}); }
+        g.s.box(p[0]-.8,y+h,p[2]-.8,p[0]+.8,y+h+16,p[2]+.8,{c:[.55,.6,.66]});
+      });
+    }
+    // 新宿副都心（都庁ツインタワー）：初台付近の右手遠景に近景ジオメトリで置く。
+    { const s=K(28.3); this.add(s,g=>{ const p=this.pos(s,-85), y=p[1]-8;
+      for(const dz of [-13,13]){ g.s.box(p[0]-9,y,p[2]+dz-9,p[0]+9,y+130,p[2]+dz+9,{c:[.6,.66,.72]}); g.s.box(p[0]-10,y+130,p[2]+dz-10,p[0]+10,y+135,p[2]+dz+10,{c:[.4,.47,.54]}); }
+    }); }
+    // 修正150：区間ごとの目印。既存のランドマークで不足する形状だけを補う。
+    // 麻布台ヒルズ（右）：幅を変えた積層で波打つ上端を表現。
+    { const s=K(17.7),p=this.pos(s,-55),y=this.terrainH(s,-55); this.add(s,g=>{
+      const q=this.pos(s,-55),base=this.terrainH(s,-55);
+      for(const [yy,w,d] of [[0,22,22],[24,20,20],[49,24,21],[76,19,19],[104,15,16],[126,12,13]])
+        g.s.box(q[0]-w/2,base+yy,q[2]-d/2,q[0]+w/2,base+yy+([0,24,49,76,104,126].indexOf(yy)===5?14:26),q[2]+d/2,{c:[.63,.68,.7],side:{lay:L.OFFICE,tw:5,th:16}});
+    }); }
+    // NTTドコモ代々木タワー：塔身と時計塔状の細い上部。
+    { const s=K(28.2),p=this.pos(s,-60),y=this.terrainH(s,-60); this.add(s,g=>{
+      const q=this.pos(s,-60),base=this.terrainH(s,-60);g.s.box(q[0]-7,base,q[2]-7,q[0]+7,base+142,q[2]+7,{c:[.42,.44,.48],side:{lay:L.OFFICE,tw:4,th:12}});
+      g.s.box(q[0]-8,base+142,q[2]-8,q[0]+8,base+147,q[2]+8,{c:[.38,.4,.44]});
+      g.s.box(q[0]-1.4,base+147,q[2]-1.4,q[0]+1.4,base+165,q[2]+1.4,{c:[.55,.57,.6]});
+    }); }
+    // ゆりかもめ高架：本線右側に平行する細い桁と橋脚。
+    for(let ss=K(13.9);ss<K(15.2);ss+=35)this.add(ss,g=>{const a=this.pos(ss,-14),b=this.pos(Math.min(ss+35,K(15.2)),-14);g.s.beam([a[0],a[1]+8,a[2]],[b[0],b[1]+8,b[2]],1.15,{c:[.62,.65,.67]});for(const q of [a,b]){const gy=this.terrainH(ss,-14);g.s.box(q[0]-.35,gy,q[2]-.35,q[0]+.35,q[1]+8,q[2]+.35,{c:[.61,.63,.64]});}});
+    // 日本橋の白い百貨店風建築（左）。
+    {const s=K(10.7);this.add(s,g=>{const p=this.pos(s,20),y=this.terrainH(s,20);g.s.box(p[0]-15,y,p[2]-20,p[0]+15,y+22,p[2]+20,{c:[.88,.87,.82]});g.s.box(p[0]-16,y+19,p[2]-21,p[0]+16,y+22,p[2]+21,{c:[.78,.77,.73]});});}
+    // 銀座の時計塔ビル（右）。
+    {const s=K(12.7);this.add(s,g=>{const p=this.pos(s,-18),y=this.terrainH(s,-18);g.s.box(p[0]-9,y,p[2]-10,p[0]+9,y+25,p[2]+10,{c:[.76,.7,.59]});g.s.box(p[0]-3,y+25,p[2]-3,p[0]+3,y+30,p[2]+3,{c:[.83,.79,.68]});g.s.box(p[0]-1.1,y+27,p[2]-1.1,p[0]+1.1,y+29,p[2]+1.1,{c:[.36,.34,.3]});});}
+    // 浜離宮の低地の緑（汐留タワーの向こう側）。
+    {const s=K(14.3);this.add(s,g=>{for(let i=0;i<22;i++){const ss=s+(i%6)*18,u=-45-Math.floor(i/6)*9,p=this.pos(ss,u),y=this.terrainH(ss,u);this.tree(g.s,'green',p[0],y,p[2],1.2+(i%3)*.2,this.R);}});}
+    // 大橋JCTドラムの縦目地と中段帯。曲線ランプを追加する。
+    this.add(d,g=>{const n=32;for(let i=0;i<n;i++){const a=i*Math.PI*2/n,ss=d+Math.cos(a)*radius,u=110+Math.sin(a)*radius,p=this.pos(ss,u);g.s.beam([p[0],p[1]-16,p[2]],[p[0],p[1]+9,p[2]],.24,{c:[.43,.46,.48]});}
+      for(const yy of [-10,3])for(let i=0;i<48;i++){const a=i*Math.PI/24,b=(i+1)*Math.PI/24,p=this.pos(d+Math.cos(a)*radius,110+Math.sin(a)*radius,yy),q=this.pos(d+Math.cos(b)*radius,110+Math.sin(b)*radius,yy);g.s.beam(p,q,1.05,{c:[.34,.37,.39]});}
+      for(let i=0;i<48;i++){const a=i*Math.PI/24,b=(i+1)*Math.PI/24,p=this.pos(d+Math.cos(a)*(radius+9),110+Math.sin(a)*(radius+9),4),q=this.pos(d+Math.cos(b)*(radius+9),110+Math.sin(b)*(radius+9),4);g.s.beam(p,q,2.2,{c:[.58,.61,.62]});}
+      // 接続ランプを短い曲線デッキとしてドラム外周へ回す。
+      for(let i=0;i<24;i++){const a=-1.15+i*.075,b=a+.075,r=radius+22-i*.32,p=this.pos(d+Math.cos(a)*r,110+Math.sin(a)*r,8+i*.18),q=this.pos(d+Math.cos(b)*(r-.32),110+Math.sin(b)*(r-.32),8+(i+1)*.18),p2=this.pos(d+Math.cos(a)*(r+5),110+Math.sin(a)*(r+5),8+i*.18),q2=this.pos(d+Math.cos(b)*(r+4.68),110+Math.sin(b)*(r+4.68),8+(i+1)*.18);g.s.quadN(p,p2,q2,q,[0,1,0],{c:[.58,.6,.61]});}
+    });
+  }
+  shutokoLandmarks() {
+    const make = (s, side, height, width, color) => {
+      const at = this.at(s), gb = this.farGB(s + 300); gb.setXf(at.x, this.roadY(s) - 9, at.z, at.h);
+      const offset=this.season==='shutoko'?20:32;
+      gb.box(side * offset - width/2, 0, -width/2, side * offset + width/2, height, width/2, LM({ c: color }));
+      gb.box(side * offset - width/2 - 1, height, -width/2 - 1, side * offset + width/2 + 1, height + 2, width/2 + 1, LM({ c: [0.34,0.4,0.44] })); gb.clearXf();
+    };
+    // スカイツリーと都庁は shutokoRoadside で近景ジオメトリとして配置する（farGBでは視認できなかったため、ここでは作らない）。
+  }
+  // 首都高専用の区間ファブリック。50mごとに両側の街並みを足し、区間の用途で密度・高さ・造形を変える。
+  shutokoFabric(g,s0,s1,side,R) {
+    const K=km=>km*1000/this.DIST_SCALE, s=(s0+s1)/2;
+    let kind,lo,hi,density;
+    if(s<K(1.8)){kind='residential';lo=5;hi=9;density=.95;}
+    else if(s<K(8.4)){
+      if(side<0){
+        // 隅田川の対岸に公園と低層市街を並べる。
+        if(s<K(1.8)||s>K(8.4)||this.inBridgeS(s))return;
+        kind='farbank';lo=6;hi=9;density=.72;
+      } else {kind='residential';lo=6;hi=10;density=.96;}
+    }
+    else if(s<K(9.7)){if(side<0)return;kind='residential';lo=6;hi=10;density=.9;}
+    else if(s<K(16.4)){
+      if(s>=K(13.55)&&s<K(14.05))return;
+      kind='office';lo=side>0?15:25;hi=side>0?30:45;density=.96;
+    }
+    else if(s<K(23.5)){kind=side>0?'residential':'office';lo=side>0?6:15;hi=side>0?15:35;density=.94;if(side<0&&s>=K(21.5)&&s<K(22.5)){lo=28;hi=42;}}
+    else if(s<K(27.5)) return;
+    else if(s<K(33.5)){
+      if(side>0&&s>=K(28.6)&&s<K(29.6))return;
+      kind='residential';lo=5;hi=9;density=.96;
+    }
+    else if(s<K(41.3)){
+      if((side<0&&((s>=K(34.0)&&s<K(34.4))||(s>=K(37.25)&&s<K(37.75))))||(side>0&&s>=K(39.8)&&s<K(40.6)))return;
+      kind='residential';lo=5;hi=8;density=.98;
+    }
+    else return;
+    if(this.inTunnelS(s)||this.inBridgeS(s))return;
+    // 川・水路・公園の側は完全に空ける。
+    const zw=this.zoneW(s,side), blocked=zw.river>.18||zw.park>.18||zw.tunnel>.18;
+    if(blocked&&kind!=='farbank')return;
+    if(kind==='farbank'){
+      const a=this.pos(s0,-72),b=this.pos(s0,-91),c=this.pos(s1,-91),d=this.pos(s1,-72),y0=this.roadY(s0)-6,y1=this.roadY(s1)-6;
+      g.s.quadN([a[0],y0,a[2]],[b[0],y0,b[2]],[c[0],y1,c[2]],[d[0],y1,d[2]],[0,1,0],{c:[.3,.58,.34],lay:L.FOREST});
+    }
+    // 特徴物の前後150m、同じ側はその高さを超える街並みを置かない。
+    const landmarks=[[17.7,-1,140],[28.2,-1,165],[20,-1,92],[23.5,1,0],[10.7,1,22],[12.7,-1,30],[14.3,-1,0],[15.95,1,122],[8.4,-1,13],[14.35,-1,98],[14.65,-1,118],[14.78,-1,106],[29.348,-1,80],[40.244,-1,90]];
+    let cap=Infinity;
+    for(const [km,ls,h] of landmarks)if(ls===side&&Math.abs(s-K(km))<150)cap=Math.min(cap,h);
+    if(R()>density)return;
+    const lowHomes=kind==='residential'&&(s<K(1.8)||(s>=K(1.8)&&s<K(8.4)&&side>0)||(s>=K(27.5)&&s<K(41.3)));
+    const reps=kind==='residential'?2:1;
+    for(let k=0;k<reps;k++){
+    const ss=s0+4+(k+.5)/reps*Math.max(2,s1-s0-8)+R()*3, u=side*(kind==='farbank'?95+R()*20:kind==='residential'&&lowHomes?19+R()*9:kind==='residential'?18+R()*15:24+R()*30);
+    const p=this.pos(ss,u),w=lowHomes?7+R()*6:kind==='warehouse'?12+R()*10:8+R()*11,d=lowHomes?7+R()*6:8+R()*13;
+    let h=lo+R()*(hi-lo);if(lowHomes)h=7+R()*4;if(kind==='farbank')h=12+R()*5;if(h>cap)h=Math.max(lo,cap-1);
+    const corners=[[p[0]-w/2,p[2]-d/2],[p[0]+w/2,p[2]-d/2],[p[0]-w/2,p[2]+d/2],[p[0]+w/2,p[2]+d/2]];
+    if(h<lo||!this.footprintClear(corners,ss,13))continue;
+    const y=lowHomes?this.roadY(ss)-1.5:kind==='farbank'?this.roadY(ss)-6:this.terrainH(ss,u), colors=kind==='warehouse'?[[.82,.82,.79],[.75,.77,.77],[.86,.84,.8]]:kind==='office'?[[.55,.62,.67],[.65,.69,.7],[.72,.73,.71]]:kind==='residential'?[[.79,.76,.7],[.72,.74,.73],[.83,.81,.76]]:[[.84,.83,.79],[.78,.8,.8],[.76,.65,.59]], c=colors[(R()*colors.length)|0];
+    g.s.box(p[0]-w/2,y,p[2]-d/2,p[0]+w/2,y+h,p[2]+d/2,{c,side:{lay:kind==='warehouse'?L.OFFICE:L.OFFICE2,tw:5,th:12}});
+    if(kind==='warehouse'){
+      g.s.box(p[0]-w/2,y+h-.35,p[2]-d/2,p[0]+w/2,y+h+.15,p[2]+d/2,{c:[.88,.88,.86]});
+    } else if(kind==='residential') {
+      g.s.box(p[0]-w/2-.25,y+h-.45,p[2]-d/2-.25,p[0]+w/2+.25,y+h,p[2]+d/2+.25,{c:[.48,.5,.51]});
+    } else {
+      const face=side>0?-1:1;
+      for(let yy=y+2.2;yy<y+h-1;yy+=3.2)g.s.box(p[0]-w/2+.6,yy,p[2]+face*(d/2+.04),p[0]+w/2-.6,yy+.55,p[2]+face*(d/2+.08),{c:kind==='office'?[.35,.54,.63]:[.4,.48,.51]});
+      if(kind==='signage'&&R()<.4)g.s.box(p[0]-w/2,y+Math.min(h-2,5),p[2]+face*(d/2+.15),p[0]+w/2,y+Math.min(h-1,6.5),p[2]+face*(d/2+.2),{c:[[.84,.28,.2],[.18,.42,.62],[.85,.68,.2]][(R()*3)|0]});
+    }
+    }
+  }
+  shutokoJcts() {
+    // カーブ外側のコンクリート壁に赤白の矢羽根を設置（黄黒板は分岐ノーズ側に限定）。
+    for(const j of [12204,14093,15255,21502,23173,26587]) this.add(j,g=>{for(let ss=j-65;ss<j+65;ss+=10){const p=this.pos(ss,-10.75,.2),q=this.pos(ss+10,-10.75,.2),p2=this.pos(ss+10,-10.75,1.05),q2=this.pos(ss,-10.75,1.05),idx=Math.floor((ss-(j-65))/10);g.s.quadN(p,q,p2,q2,[-1,0,0],{c:idx%2?[.92,.92,.9]:[.82,.14,.13]});}});
+    for (const [s,name,radius,turns] of [[2615,'小松川',28,.45],[12204,'両国',34,.5],[14093,'箱崎',38,.55],[15255,'江戸橋',28,.35],[16712,'京橋',28,.35],[21502,'浜崎橋',30,.4],[26587,'谷町',30,.4]]) this.add(s,g=>{
+      const at=this.at(s),o=this.pos(s,0),yb=this.roadY(s)+5;
+      const P=(a,r,y)=>[o[0]+Math.sin(at.h)*Math.cos(a)*r+Math.cos(at.h)*Math.sin(a)*r,y,o[2]+Math.cos(at.h)*Math.cos(a)*r-Math.sin(at.h)*Math.sin(a)*r];
+      const clear = (...pts) => {
+        const samples = pts.map(p=>[p[0],p[2]]);
+        for(let i=0;i<pts.length;i++){const a=pts[i],b=pts[(i+1)%pts.length];samples.push([(a[0]+b[0])/2,(a[2]+b[2])/2]);}
+        return this.footprintClear(samples,s,13);
+      };
+      const n=Math.ceil(turns*48),total=turns*Math.PI*2;
+      for(let i=0;i<n;i++){const a=total*i/n,b=total*(i+1)/n,r=radius+(name==='大橋'?2*Math.sin(a/2):0),y0=yb+(name==='大橋'?7*i/n:0),y1=yb+(name==='大橋'?7*(i+1)/n:0),p=P(a,r,y0),q=P(b,r,y1),p2=P(a,r+7,y0),q2=P(b,r+7,y1);
+        if(clear(p,p2,q2,q)) g.s.quadN(p,p2,q2,q,[0,1,0],{c:[.62,.63,.63]});
+        for(const [rr,yy] of [[r,y0],[r+7,y0]]){const c=P(a,rr,yy),d=P(a,rr,yy+1.2);if(clear(c))g.det.beam(c,d,.18,{c:[.72,.73,.73]});}
+        if(i%4===0){const c=P(a,r+3.5,y0),gy=this.terrainH(s,0),foot=[[c[0]-.65,c[2]-.65],[c[0]+.65,c[2]-.65],[c[0]-.65,c[2]+.65],[c[0]+.65,c[2]+.65]];if(this.footprintClear(foot,s,13))g.s.box(c[0]-.65,gy,c[2]-.65,c[0]+.65,y0,c[2]+.65,{c:[.68,.68,.67]});}
+      }
+      const p=P(-.9,radius+13,yb+2),q=P(.9,radius+13,yb+2),a=P(-.9,-radius-13,yb+2),b=P(.9,-radius-13,yb+2);if(clear(p,q,b,a))g.s.quadN(p,q,b,a,[0,1,0],{c:[.58,.59,.6]});
+      for(const c of [p,q,a,b]){const gy=this.terrainH(s,0),foot=[[c[0]-.55,c[2]-.55],[c[0]+.55,c[2]-.55],[c[0]-.55,c[2]+.55],[c[0]+.55,c[2]+.55]];if(this.footprintClear(foot,s,13))g.s.box(c[0]-.55,gy,c[2]-.55,c[0]+.55,c[1],c[2]+.55,{c:[.67,.68,.68]});}
+    });
   }
   // 修正117：ナビの観光案内・同乗者の反応の対象になる「実際に配置されている地物」の表（季節×区間×地物）。
   // 載せるのは、このルートに実物のジオメトリを置いているものだけ：橋（アーチと橋名板）・トンネル（坑口と名板）・地形タイプの区間（その区間に専用の景観を置いている：桜並木・桜のトンネル・川・海・港・高原・渓谷・紅葉のトンネル・集落・雪原・氷の湖・雪の壁・温泉街・城下町）・目的地。
@@ -265,22 +500,27 @@ export class LongWorld {
       const prev = out.find(o => o.kind === k && Math.abs(o.s1 - z[0]) < 1 && o.side === (z[2] === z[3] ? 0 : side)); if (prev) { prev.s1 = z[1]; continue; }
       add(id, k, nm, z[0], z[1], z[2] === z[3] ? 0 : side);
     }
+    if (this.season === 'shutoko') {
+      const named = new Set();
+      for (const [s, name] of D.sections) if (s > 0 && s < this.ROUTE_LEN && !named.has(name)) { named.add(name); add('urban:'+name, 'landmark', name, s, s + 150, 0); }
+      for (const [name, s] of D.landmarks) if (!named.has(name)) { named.add(name); add('urban:'+name, 'landmark', name, s, s + 150, 0); }
+    }
     if (this.season === 'autumn') add('maple:hill', 'maple', '紅葉の丘', 1000, 2000, 0); // 秋は全線が紅葉の木（tree:'maple'）。丘の区間を見どころに
-    add('dest', 'dest', D.dest, ROUTE_LEN - 1500, ROUTE_LEN, 0);
+    add('dest', 'dest', D.dest, this.direction === 'east' ? 0 : this.ROUTE_LEN - 1500, this.direction === 'east' ? 1500 : this.ROUTE_LEN, 0);
     return out.sort((p, q) => p.s0 - q.s0);
   }
   segment(g, s0, s1) {
-    const season = this.season, D = this.D, R = rng(Math.floor(s0) * 7 + 3), ds = 10, W = season === 'winter';
+    const season = this.season, D = this.D, R = rng(Math.floor(s0) * 7 + 3), ds = 10, W = season === 'winter', K = km => km * 1000 / this.DIST_SCALE;
     const tun = this.inTunnelS((s0 + s1) / 2), br = this.inBridgeS((s0 + s1) / 2);
     // 道路面：車道（アスファルト）と路肩。冬は車道を除雪済みの濃いアスファルト、路肩は圧雪
     for (let s = s0; s < s1 - 0.01; s += ds) {
       const e = Math.min(s1, s + ds), q = (u, ss) => this.pos(ss, u, 0);
       const strip = (u0, u1, o, gbk = g.s) => gbk.quadN(q(u0, s), q(u1, s), q(u1, e), q(u0, e), [0, 1, 0], o);
-      if (s > ROUTE_LEN + 1) continue;
+      if (s > this.ROUTE_LEN + 1) continue;
       const asph = { c: W ? [0.62, 0.64, 0.68] : [0.95, 0.95, 0.95], mat: 7, lay: L.ASPHALT };
       strip(-7.9, 7.9, asph);
       for (const side of [1, -1]) {
-        const fopen = side > 0 && this.fac.some(f => e > f.s - 170 && s < f.s + 420);
+        const fopen = this.fac.some(f => side === f.side && e > f.s - 170 && s < f.s + 420);
         if (W) strip(side > 0 ? 7.9 : -EDGE_U, side > 0 ? EDGE_U : -7.9, { c: [0.9, 0.92, 0.96], lay: L.WHITE });
         else strip(side > 0 ? 7.9 : -EDGE_U, side > 0 ? EDGE_U : -7.9, asph);
         if (!fopen) strip(side > 0 ? EDGE_U : -ROAD_HW, side > 0 ? ROAD_HW : -EDGE_U, { c: W ? [0.95, 0.96, 1] : [0.55, 0.53, 0.5], lay: W ? L.WHITE : L.ROCK });
@@ -294,11 +534,16 @@ export class LongWorld {
         for (const [p, r] of [[a0, b0], [a1, b1]]) g.s.quadN([p[0], p[1], p[2]], [r[0], r[1], r[2]], [r[0], r[1] + y, r[2]], [p[0], p[1] + y, p[2]], [0, 0, 1], cc); }
       // ガードレール（橋は高欄、冬は雪をかぶる）
       for (const side of [1, -1]) {
-        if (side > 0 && this.fac.some(f => e > f.s - 170 && s < f.s + 420)) continue;
+        if (this.fac.some(f => side === f.side && e > f.s - 170 && s < f.s + 420)) continue;
         const u = side * 9.95;
         if (br) { const p = this.pos(s, u), r = this.pos(e, u), c = { c: [0.82, 0.82, 0.8] }; g.s.quadN([p[0], p[1], p[2]], [r[0], r[1], r[2]], [r[0], r[1] + 1.1, r[2]], [p[0], p[1] + 1.1, p[2]], [side, 0, 0], c); g.s.quadN([p[0], p[1] + 1.1, p[2]], [r[0], r[1] + 1.1, r[2]], [r[0] + 0, r[1] + 1.1, r[2]], [p[0], p[1] + 1.1, p[2]], [0, 1, 0], c); }
-        else if (!tun) { const p = this.pos(s, u, 0.55), r = this.pos(e, u, 0.55); g.det.beam(p, r, 0.06, { c: [0.85, 0.86, 0.85] }); for (let t = s; t < e; t += 4) { const pp = this.pos(t, u); g.det.box(pp[0] - 0.05, pp[1], pp[2] - 0.05, pp[0] + 0.05, pp[1] + 0.75, pp[2] + 0.05, { c: [0.7, 0.7, 0.7] }); }
-          if (W) { const a0 = this.pos(s, u, 0.62), b0 = this.pos(e, u, 0.62); g.det.beam(a0, b0, 0.05, { c: [1, 1, 1] }); } }
+        else if (!tun) { if (season === 'shutoko') { const p=this.pos(s,side*9.45,.15),r=this.pos(e,side*9.45,.15),p2=this.pos(s,side*9.45,1.15),r2=this.pos(e,side*9.45,1.15); g.s.quadN(p,r,r2,p2,[side,0,0],{c:[.66,.68,.69]}); } else { const p = this.pos(s, u, 0.55), r = this.pos(e, u, 0.55); g.det.beam(p, r, 0.06, { c: [0.85, 0.86, 0.85] }); for (let t = s; t < e; t += 4) { const pp = this.pos(t, u); g.det.box(pp[0] - 0.05, pp[1], pp[2] - 0.05, pp[0] + 0.05, pp[1] + 0.75, pp[2] + 0.05, { c: [0.7, 0.7, 0.7] }); }
+          if (W) { const a0 = this.pos(s, u, 0.62), b0 = this.pos(e, u, 0.62); g.det.beam(a0, b0, 0.05, { c: [1, 1, 1] }); } } }
+      }
+      if (season === 'shutoko' && !tun && s0 >= 48671 && s0 < 60003) for(const side of [-1,1]) {
+        const u=side*10.25,p=this.pos(s,u,1.1),q=this.pos(e,u,1.1),p2=this.pos(s,u,5.6),q2=this.pos(e,u,5.6);
+        g.s.quadN(p,q,q2,p2,[side,0,0],{c:[.75,.79,.81]});
+        for(let t=s;t<e;t+=10){const c=this.pos(t,u,0);g.det.box(c[0]-.07,c[1],c[2]-.07,c[0]+.07,c[1]+5.9,c[2]+.07,{c:[.57,.61,.63]});}
       }
     }
     // 橋：床版の下側・橋脚・下の川や谷の地面（道路の下まで続ける）
@@ -306,11 +551,14 @@ export class LongWorld {
       const pa = this.pos(s, -ROAD_HW), pb = this.pos(s, ROAD_HW), qa = this.pos(e, -ROAD_HW), qb = this.pos(e, ROAD_HW), cc = { c: [0.7, 0.7, 0.68] };
       g.s.quadN([pb[0], pb[1] - 1.4, pb[2]], [pa[0], pa[1] - 1.4, pa[2]], [qa[0], qa[1] - 1.4, qa[2]], [qb[0], qb[1] - 1.4, qb[2]], [0, -1, 0], cc);
       for (const [p, q] of [[pa, qa], [pb, qb]]) g.s.quadN([p[0], p[1] - 1.4, p[2]], [q[0], q[1] - 1.4, q[2]], [q[0], q[1], q[2]], [p[0], p[1], p[2]], [0, 0, 1], cc);
-      if (Math.round(s) % 40 === 0) for (const u of [-5, 5]) { const p = this.pos(s, u), gy = this.terrainH(s, u > 0 ? 14 : -14) - 4; g.s.box(p[0] - 1, gy, p[2] - 1, p[0] + 1, p[1] - 1.4, p[2] + 1, { c: [0.72, 0.72, 0.7] }); }
+      if (Math.round(s) % 40 === 0) for (const u of (this.season === 'shutoko' ? [0] : [-5, 5])) { const p = this.pos(s, u), gy = this.terrainH(s, u > 0 ? 14 : -14) - 4; g.s.box(p[0] - 1, gy, p[2] - 1, p[0] + 1, p[1] - 1.4, p[2] + 1, { c: [0.72, 0.72, 0.7] }); }
       const under = (this.terrainH(s, 14) + this.terrainH(s, -14)) / 2 - 1;
       g.s.quadN([pa[0], under, pa[2]], [pb[0], under, pb[2]], [qb[0], under, qb[2]], [qa[0], under, qa[2]], [0, 1, 0], { c: this.season === 'winter' ? [0.92, 0.94, 0.98] : [0.5, 0.6, 0.45], lay: this.season === 'winter' ? L.WHITE : L.GRASS }); }
     // 修正117：橋だと一目で分かるように、両側にアーチ（上路から見える鋼製アーチと吊り材）を架け、橋の両端に橋名板を付ける
-    for (const B of this.D.bridges) if (s1 > B[0] && s0 < B[1]) this.bridgeArch(g, Math.max(s0, B[0]), Math.min(s1, B[1]), B);
+    for (const B of this.D.bridges) if (s1 > B[0] && s0 < B[1]) {
+      if (B[2] === '荒川大橋') { /* 荒川大橋の橋上は建物・斜材を置かず、川と空を保つ。 */ }
+      else this.bridgeArch(g, Math.max(s0, B[0]), Math.min(s1, B[1]), B);
+    }
     // トンネル：側壁・天井・照明。坑口の上は山肌でふさぐ
     if (tun) for (let s = s0; s < s1; s += 10) { const e = s + 10, wallC = { c: [0.85, 0.84, 0.8], lay: L.TUNNELWALL };
       for (const side of [1, -1]) { const p = this.pos(s, side * 10.4), q = this.pos(e, side * 10.4); g.s.quadN([p[0], p[1], p[2]], [q[0], q[1], q[2]], [q[0], q[1] + 6.2, q[2]], [p[0], p[1] + 6.2, p[2]], [-side, 0, 0], wallC);
@@ -327,11 +575,36 @@ export class LongWorld {
       const lay = this.tunnelSign || (this.tunnelSign = {}); const sl = lay[nm] || (lay[nm] = this.greenSign([nm], { bg: '#2a2a2a', scale: 0.8 }));
       const sa = this.pos(sp + dir * 0.05, -4, 6.6), sb = this.pos(sp + dir * 0.05, 4, 6.6); g.s.panel(sa[0], sa[2], sb[0], sb[2], sa[1], sa[1] + 2, 0.05, [0, 0, dir], { c: [1, 1, 1], mat: 16, lay });
     }
+    if (season === 'shutoko' && !tun) {
+      // 高架本線の太い中央橋脚。30m間隔で市街地の地面から路面裏まで立てる。
+      for(let sp=Math.ceil(s0/30)*30;sp<s1;sp+=30) { if(sp<0 || sp>this.ROUTE_LEN) continue; const gy=this.terrainH(sp,0), p=this.pos(sp,0), top=this.roadY(sp)-1.35;
+        for(const u of [-.95,.95]) { const c=this.pos(sp,u); g.s.box(c[0]-.65,gy,c[2]-.65,c[0]+.65,top,c[2]+.65,{c:[.66,.67,.67]}); }
+      }
+      // JCT前後の導流帯と外側の黄黒警戒板
+      for(const j of [2615,12204,14093,15255,16708,20195,21502,24844,26587,34142,39372]) if(s1>j-170 && s0<j+170) {
+        for(const side of [-1,1]) for(let ss=Math.max(s0,j-150);ss<Math.min(s1,j+150);ss+=10) {
+          // 両国JCTの白ゼブラは左側ゴアだけ。本線の走行面には塗らない。
+          if(j!==12204 || side===1) {const a=this.pos(ss,side*7.3),b=this.pos(Math.min(ss+7,s1),side*7.3),c=this.pos(Math.min(ss+7,s1),side*9.1),d=this.pos(ss,side*9.1);g.d2.quadN(a,b,c,d,[0,1,0],{c:[.93,.93,.91]});}
+          if(Math.floor((ss-(j-150))/14)%2===0){g.det.beam(this.pos(ss,side*10.6,1.6),this.pos(Math.min(ss+5,s1),side*10.6,1.6),.28,{c:[.94,.72,.08]});g.det.beam(this.pos(ss,side*10.65,1.25),this.pos(Math.min(ss+5,s1),side*10.65,1.25),.3,{c:[.12,.13,.13]});}
+        }
+      }
+    }
+    // 首都高標準の低擁壁＋金属フェンス。住宅地の4号と高井戸直後は高い遮音壁。
+    if(season==='shutoko'&&!tun){
+      const housing=(s0>=44821&&s0<48671)||(s0>=48671&&s0<49250);
+      for(const side of [-1,1]){const u=side*(housing?10.25:10.05),height=housing?7.5:2.0,p=this.pos(s0,u,.15),q=this.pos(s1,u,.15),p2=this.pos(s0,u,height),q2=this.pos(s1,u,height);g.s.quadN(p,q,q2,p2,[side,0,0],{c:housing?[.68,.7,.7]:[.65,.67,.68]});
+        if(housing){for(let v=0;v<5;v++){const a=this.pos(s0,u,1.25+v*1.05),b=this.pos(s1,u,1.25+v*1.05);g.det.beam(a,b,.045,{c:[.48,.51,.52]});}for(let t=s0;t<s1;t+=10){const c=this.pos(t,u,0);g.det.box(c[0]-.06,c[1],c[2]-.06,c[0]+.06,c[1]+height,c[2]+.06,{c:[.55,.57,.58]});}}
+        else {const a=this.pos(s0,u,1.35),b=this.pos(s1,u,1.35);g.det.beam(a,b,.07,{c:[.7,.72,.71]});for(let t=s0;t<s1;t+=4){const c=this.pos(t,u,0);g.det.box(c[0]-.045,c[1],c[2]-.045,c[0]+.045,c[1]+1.45,c[2]+.045,{c:[.52,.54,.54]});}}
+      }
+      // 高架区間のツインアーム照明を両側に密配置。
+      if(s0%60<50)for(const side of [-1,1])for(let ss=Math.ceil(s0/60)*60;ss<s1;ss+=60){const base=this.pos(ss,side*9.2),top=[base[0],base[1]+8.2,base[2]],tip=this.pos(ss,side*5.2,8.2);g.det.beam(base,top,.12,{c:[.45,.47,.48]});g.det.beam(top,tip,.1,{c:[.48,.5,.5]});g.det.box(tip[0]-.28,tip[1]-.08,tip[2]-.28,tip[0]+.28,tip[1]+.08,tip[2]+.28,{c:[1,.93,.78],mat:8});}
+    }
     this.terrainSeg(g, s0, s1);
     this.scenery(g, s0, s1, R);
   }
   // 修正117：橋のアーチ（チャンクの範囲 s0〜s1 の分だけ作る）。B=[始点, 終点, 橋名]。アーチの高さは橋長の約12%（6〜22m）
   bridgeArch(g, s0, s1, B) {
+    if (this.season === 'shutoko') return; // 首都高の橋は桁橋・アーチ吊り材は置かない（荒川は斜張橋フィーチャで表現）
     const [a, b, nm] = B, L0 = b - a, rise = Math.min(22, Math.max(6, L0 * 0.12)), col = { c: { spring: [0.92, 0.45, 0.5], summer: [0.95, 0.96, 0.98], autumn: [0.85, 0.3, 0.18], winter: [0.3, 0.5, 0.85] }[this.season] || [0.8, 0.8, 0.8] };
     const H = s => { const t = clamp((s - a) / L0, 0, 1); return 1.1 + rise * 4 * t * (1 - t); };
     for (const side of [1, -1]) { const u = side * 10.6;
@@ -348,14 +621,14 @@ export class LongWorld {
   }
   groundCol(k) {
     const sea = this.season, D = this.D;
-    switch (k) { case 'snow': return [0.95, 0.96, 1]; case 'ice': return [0.55, 0.74, 0.9]; /* 修正117：凍った湖面は雪原と見分けられる青みの氷色に */ case 'sand': return [0.95, 0.88, 0.7]; case 'rock': return [0.62, 0.58, 0.52];
+    switch (k) { case 'snow': return [0.95, 0.96, 1]; case 'ice': return [0.55, 0.74, 0.9]; /* 修正117：凍った湖面は雪原と見分けられる青みの氷色に */ case 'sand': return [0.95, 0.88, 0.7]; case 'rock': return [0.62, 0.58, 0.52]; case 'cityground': return [0.48, 0.49, 0.5];
       case 'field': return sea === 'autumn' ? [0.82, 0.7, 0.4] : [0.75, 0.66, 0.5]; case 'paddy': return sea === 'spring' ? [0.75, 0.82, 0.9] : sea === 'summer' ? [0.55, 0.85, 0.4] : [0.85, 0.75, 0.42];
       case 'forest': return sea === 'autumn' ? [0.95, 0.55, 0.3] : sea === 'winter' ? [0.92, 0.94, 0.98] : sea === 'spring' ? [0.7, 0.85, 0.6] : [0.55, 0.78, 0.5];
       default: return D.grass; }
   }
   terrainSeg(g, s0, s1) {
     const US = [14, 20, 28, 40, 55, 75, 100, 135, 180, 240, 320, 420];
-    const lay = k => k === 'snow' || k === 'ice' ? L.WHITE : k === 'sand' ? L.FIELD : k === 'rock' ? L.ROCK : k === 'field' ? L.FIELD : k === 'paddy' ? L.PADDY : k === 'forest' ? L.FOREST : L.GRASS;
+    const lay = k => k === 'snow' || k === 'ice' ? L.WHITE : k === 'sand' ? L.FIELD : k === 'rock' ? L.ROCK : k === 'field' ? L.FIELD : k === 'paddy' ? L.PADDY : k === 'forest' ? L.FOREST : k === 'cityground' ? L.ASPHALT : L.GRASS;
     const ds = 10;
     for (const side of [1, -1]) for (let s = s0; s < s1 - 0.01; s += ds) { const e = Math.min(s1, s + ds);
       const u0s = [ROAD_HW, ...US];
@@ -371,9 +644,18 @@ export class LongWorld {
       }
       // 水面（川・湖・海辺・渓流）
       const w = this.zoneW((s + e) / 2, side);
-      if (w.river > 0.3) this.water(g, s, e, side * 40, side * 95, this.roadY(s) - 3.8);
+      if (w.river > 0.3) {
+        if(this.season==='shutoko'&&side<0&&(s+e)/2>=1.8*1000/this.DIST_SCALE&&(s+e)/2<8.4*1000/this.DIST_SCALE&&!this.inBridgeS((s+e)/2)) this.water(g,s,e,-30,-75,this.roadY(s)-9);
+        else this.water(g, s, e, side * 40, side * 95, this.roadY(s) - 3.8);
+      }
       if (w.gorge > 0.3) this.water(g, s, e, side * 60, side * 90, this.roadY(s) - 36.5);
       if (w.valley > 0.3) this.water(g, s, e, side * 12, side * 160, this.roadY(s) - 20.5);
+    }
+    if (this.season === 'shutoko' && !this.inTunnelS((s0+s1)/2)) {
+      // 高架下の市街街路。交差する広い道路と細い格子状の街路を地表面に重ねる。
+      const asphalt={c:[.32,.33,.34],lay:L.ASPHALT};
+      for(let ss=Math.ceil(s0/90)*90;ss<s1;ss+=90) for(const side of [-1,1]) { if(this.groundKind(ss,side*40)==='river') continue; const u0=side*14,u1=side*230,a=this.pos(ss,u0),b=this.pos(ss,u1),c=this.pos(ss+5,u1),d=this.pos(ss+5,u0); g.s.quadN([a[0],this.terrainH(ss,u0)+.04,a[2]],[b[0],this.terrainH(ss,u1)+.04,b[2]],[c[0],this.terrainH(ss+5,u1)+.04,c[2]],[d[0],this.terrainH(ss+5,u0)+.04,d[2]],[0,1,0],asphalt); }
+      for(const side of [-1,1]) { if(this.groundKind((s0+s1)/2,side*40)==='river') continue; for(let u=30;u<230;u+=70) { const a=this.pos(s0,side*u),b=this.pos(s1,side*u),c=this.pos(s1,side*(u+4)),d=this.pos(s0,side*(u+4)); g.s.quadN([a[0],this.terrainH(s0,side*u)+.045,a[2]],[b[0],this.terrainH(s1,side*u)+.045,b[2]],[c[0],this.terrainH(s1,side*(u+4))+.045,c[2]],[d[0],this.terrainH(s0,side*(u+4))+.045,d[2]],[0,1,0],asphalt); } }
     }
   }
   water(g, s, e, u0, u1, y) { const P = (u, ss) => { const p = this.pos(ss, u); return [p[0], y, p[2]]; }; g.s.quadN(P(u0, s), P(u1, s), P(u1, e), P(u0, e), [0, 1, 0], this.season === 'winter' ? { c: [0.8, 0.88, 0.95], lay: L.WHITE } : { c: [0.7, 0.85, 0.95], lay: L.WATER, mat: 21 }); }
@@ -403,10 +685,12 @@ export class LongWorld {
     return Math.max(w, d) / 2;
   }
   scenery(g, s0, s1, R) {
-    const season = this.season, D = this.D, main = D.tree;
+    const season = this.season, D = this.D, main = D.tree, K = km => km * 1000 / this.DIST_SCALE;
     for (const side of [1, -1]) {
       const w = this.zoneW((s0 + s1) / 2, side); let best = 'hills', bw = 0; for (const t in w) if (w[t] > bw) { bw = w[t]; best = t; }
-      const facZone = side > 0 && this.fac.some(f => s1 > f.s - 240 && s0 < f.s + 460);
+      const urbanCore = season === 'shutoko' && (s0 >= 15255 && s0 < 34142);
+      const facZone = this.fac.some(f => side === f.side && s1 > f.s - 240 && s0 < f.s + 460);
+      if (season === 'shutoko') this.shutokoFabric(g,s0,s1,side,R);
       if (facZone) continue;
       const place = (u, kind, sc) => { const s = s0 + R() * (s1 - s0), p = this.pos(s, side * u), y = this.terrainH(s, side * u); if (y < -1 && season === 'summer') return; this.tree(g.s, kind, p[0], y - 0.2, p[2], sc, R); };
       // 並木・トンネル状の並木（桜・紅葉）
@@ -414,14 +698,39 @@ export class LongWorld {
           if (best === 'sakuraT') { const c = this.pos(s, side * 7.5, 0); g.s.cbox(c[0], this.roadY(s) + 7.6, c[2], 5, 1.2, 6, { c: [1, 0.8, 0.88], lay: L.TREE }); } } }
       if (best === 'mapleT') for (let s = s0; s < s1; s += 9) { const p = this.pos(s, side * 12.5), y = this.terrainH(s, side * 12.5); this.tree(g.s, 'maple', p[0], y - 0.2, p[2], 1.7, R); const c = this.pos(s, side * 7.5, 0); g.s.cbox(c[0], this.roadY(s) + 7.4, c[2], 5, 1.2, 6, { c: R() < 0.5 ? [0.92, 0.3, 0.12] : [0.95, 0.62, 0.15], lay: L.TREE }); }
       // 森・雑木林
-      const forest = { mount: 9, cliff: 7, hills: 4, snowwall: 9, mapleT: 6, gorge: 5, plateau: 2, village: 2, lake: 1, snowfield: 2, valley: 3, river: 2, farm: 1, sakura: 1, town: 1, onsen: 2, harbor: 0, sea: 0, bay: 0, sakuraT: 2 }[best] || 2;
+      const forest = season === 'shutoko' ? 0 : ({ mount: 9, cliff: 7, hills: 4, snowwall: 9, mapleT: 6, gorge: 5, plateau: 2, village: 2, lake: 1, snowfield: 2, valley: 3, river: 2, farm: 1, sakura: 1, town: 1, onsen: 2, harbor: 0, sea: 0, bay: 0, sakuraT: 2, park: 10 }[best] || 2);
       for (let k = 0; k < forest; k++) { const u = 18 + R() * (best === 'plateau' ? 120 : 160); const kind = season === 'winter' ? 'snowpine' : season === 'autumn' ? (R() < 0.75 ? 'maple' : 'pine') : season === 'spring' ? (R() < 0.25 ? 'sakura' : R() < 0.5 ? 'pine' : 'green') : best === 'plateau' ? (R() < 0.5 ? 'birch' : 'green') : R() < 0.4 ? 'pine' : 'green'; place(u, kind, 0.9 + R() * 0.6); }
-      if (best === 'river') for (let s = s0; s < s1; s += 16) { for (const u of [36, 100]) { const p = this.pos(s, side * u), y = this.terrainH(s, side * u); this.tree(g.s, season === 'spring' ? 'sakura' : 'green', p[0], y - 0.2, p[2], 1.3, R); } }
+      if (best === 'river' && season !== 'shutoko') for (let s = s0; s < s1; s += 16) { for (const u of [36, 100]) { const p = this.pos(s, side * u), y = this.terrainH(s, side * u); this.tree(g.s, season === 'spring' ? 'sakura' : 'green', p[0], y - 0.2, p[2], 1.3, R); } }
       // 集落・城下町・港町・温泉街の家並み
       if (['town', 'village', 'harbor', 'onsen'].includes(best) || (best === 'farm' && R() < 0.25)) {
         const n = best === 'farm' ? 1 : best === 'town' || best === 'onsen' ? 4 : 2;
         for (let k = 0; k < n; k++) { const s = s0 + R() * (s1 - s0), u = 24 + R() * (best === 'harbor' ? 18 : 70), p = this.pos(s, side * u), y = this.terrainH(s, side * u), at = this.at(s);
           this.house(g.s, p[0], y, p[2], at.h + (side > 0 ? Math.PI / 2 : -Math.PI / 2), R, best === 'onsen' ? { lamp: true, wall: [0.55, 0.4, 0.3] } : best === 'harbor' ? { wall: [0.85, 0.85, 0.82], roof: [0.25, 0.4, 0.55] } : {}); }
+      }
+      const shutoBackground = season === 'shutoko' && ((s0 >= K(5.9) && s0 < K(6.35)) || (s0 >= K(10.5) && s0 < K(12.0)) || (s0 >= K(14.0) && s0 < K(14.25)) || (s0 >= K(16.4) && s0 < K(17.2)) || (s0 >= K(19.0) && s0 < K(19.4)) || (s0 >= K(21.5) && s0 < K(22.5)));
+      if (['city', 'cityCore', 'cityMix', 'cityLo', 'suburb'].includes(best) && season !== 'shutoko' && s0 % 500 < 50) {
+        const count = season === 'shutoko' ? 1 : best === 'cityCore' ? 5 : best === 'cityMix' ? 3 : best === 'city' ? 2 : best === 'suburb' ? 1 : 2;
+        for (let k = 0; k < count; k++) {
+          const ss = s0 + 4 + R() * Math.max(1, s1 - s0 - 8);
+          let u = season === 'shutoko' ? 52 + R()*24 : (best === 'cityCore' ? 22 : 25) + R() * (best === 'cityLo' ? 70 : 90);
+          const h = best === 'cityCore' ? 24 + R() * 48 : best === 'cityMix' ? 15 + R() * 28 : best === 'city' ? 13 + R() * 25 : best === 'suburb' ? 5 + R() * 9 : 7 + R() * 16, w0 = 7 + R() * 10, d = 8 + R() * 12;
+          let p;
+          if (season === 'shutoko') {
+            let clear = false;
+            for (let candidate = u; candidate <= u + 24; candidate += 2) {
+              const test = this.pos(ss, side * candidate), corners = [[test[0]-w0/2,test[2]-d/2],[test[0]+w0/2,test[2]-d/2],[test[0]-w0/2,test[2]+d/2],[test[0]+w0/2,test[2]+d/2]];
+              if (this.footprintClear(corners, ss, 13)) { u = candidate; p = test; clear = true; break; }
+            }
+            if (!clear) continue;
+          } else p = this.pos(ss, side * u);
+          const y = this.terrainH(ss, side * u);
+          const glass = best === 'cityCore', wall = glass ? [[0.58,0.68,0.73],[0.72,0.76,0.78],[0.48,0.55,0.6]][(R()*3)|0] : best === 'cityLo' || best === 'suburb' ? [[0.78,0.72,0.64],[0.72,0.68,0.6],[0.68,0.72,0.72]][(R()*3)|0] : [[0.64,0.65,0.65],[0.72,0.7,0.66],[0.56,0.6,0.62]][(R()*3)|0];
+          const gb = g.s; gb.box(p[0]-w0/2,y,p[2]-d/2,p[0]+w0/2,y+h,p[2]+d/2,{c:wall});
+          // 窓の水平帯と控えめな看板色で、区間ごとのビル用途を見分けやすくする。
+          const face = side > 0 ? -1 : 1;
+          for (let yy = y + 2.2; yy < y + h - 1; yy += glass ? 3.2 : 2.6) gb.box(p[0]-w0/2+0.5,yy,p[2]+face*(d/2+0.04),p[0]+w0/2-0.5,yy+0.65,p[2]+face*(d/2+0.08),{c:glass?[0.35,0.56,0.66]:[0.38,0.48,0.53]});
+          if (best === 'cityCore' && k === 0 && R() < 0.35) gb.box(p[0]-w0/2,y+3,p[2]+face*(d/2+0.1),p[0]+w0/2,y+4.4,p[2]+face*(d/2+0.14),{c:[0.72,0.34,0.25]});
+        }
       }
       if (best === 'harbor' && side < 0 && R() < 0.6) { const s = s0 + 20, p = this.pos(s, -70), y = 0.3; g.s.box(p[0] - 3, -0.5, p[2] - 12, p[0] + 3, y + 0.4, p[2] + 12, { c: [0.7, 0.7, 0.68] }); const b = this.pos(s, -82); g.s.box(b[0] - 1.6, -0.2, b[2] - 5, b[0] + 1.6, 1.2, b[2] + 5, { c: [0.95, 0.95, 0.95] }); g.s.box(b[0] - 1, 1.2, b[2] - 1, b[0] + 1, 2.8, b[2] + 2, { c: [0.3, 0.45, 0.7] }); }
       if (best === 'onsen' && R() < 0.7) { const p = this.pos(s0 + 25, side * 30), y = this.terrainH(s0 + 25, side * 30); (this.steam || (this.steam = [])).push([p[0], y + 1, p[2]]); }
@@ -434,10 +743,12 @@ export class LongWorld {
         g.s.quadN([a[0], a[1] + 0.7, a[2]], [b[0], b[1] + 0.7, b[2]], [c[0], c[1] + 0.2, c[2]], [d[0], d[1] + 0.2, d[2]], [0, 1, 0], { c: [0.96, 0.97, 1], lay: L.WHITE }); }
     }
     // 照明（中央分離帯）。トンネルの前後・施設の前後
-    if (Math.round(s0) % 150 === 0 || this.fac.some(f => s0 > f.s - 300 && s0 < f.s + 500)) { const p = this.pos(s0, 0); g.det.box(p[0] - 0.12, p[1] + 0.8, p[2] - 0.12, p[0] + 0.12, p[1] + 10, p[2] + 0.12, { c: [0.6, 0.6, 0.62] }); for (const side of [1, -1]) { const q = this.pos(s0, side * 2.2, 10); g.det.beam([p[0], p[1] + 10, p[2]], q, 0.08, { c: [0.6, 0.6, 0.62] }); g.det.box(q[0] - 0.3, q[1] - 0.25, q[2] - 0.3, q[0] + 0.3, q[1], q[2] + 0.3, { c: [1, 0.95, 0.8], mat: 8 }); } }
+    if (season === 'shutoko' && !this.inTunnelS((s0 + s1) / 2)) {
+      for(let ls=Math.ceil(s0/35)*35;ls<s1;ls+=35) for(const side of [-1,1]) { const p=this.pos(ls,side*8.4),q=this.pos(ls,side*8.4,12.5),arm=this.pos(ls,side*6.6,12.5); g.det.box(p[0]-.11,p[1],p[2]-.11,p[0]+.11,p[1]+12.5,p[2]+.11,{c:[.56,.58,.6]});g.det.beam(q,arm,.08,{c:[.56,.58,.6]});g.det.box(arm[0]-.34,arm[1]-.2,arm[2]-.28,arm[0]+.34,arm[1]+.08,arm[2]+.28,{c:[1,.95,.8],mat:8}); }
+    } else if (Math.round(s0) % 150 === 0 || this.fac.some(f => s0 > f.s - 300 && s0 < f.s + 500)) { const p = this.pos(s0, 0); g.det.box(p[0] - 0.12, p[1] + 0.8, p[2] - 0.12, p[0] + 0.12, p[1] + 10, p[2] + 0.12, { c: [0.6, 0.6, 0.62] }); for (const side of [1, -1]) { const q = this.pos(s0, side * 2.2, 10); g.det.beam([p[0], p[1] + 10, p[2]], q, 0.08, { c: [0.6, 0.6, 0.62] }); g.det.box(q[0] - 0.3, q[1] - 0.25, q[2] - 0.3, q[0] + 0.3, q[1], q[2] + 0.3, { c: [1, 0.95, 0.8], mat: 8 }); } }
     // キロポスト（表示km：10kmごと＝実距離312.5mごと）
-    for (let km = Math.ceil(Math.max(0, s0) * DIST_SCALE / 10000) * 10; km * 1000 / DIST_SCALE < s1 && km <= 400; km += 10) {
-      const sk = km * 1000 / DIST_SCALE, p = this.pos(sk, 10.7), at = this.at(sk), lay = this.kpLay || (this.kpLay = {}), l = lay[km] || (lay[km] = this.greenSign([String(km)], { bg: '#1d4f9c' }));
+    for (let km = Math.ceil(Math.max(0, s0) * this.DIST_SCALE / 10000) * 10; km * 1000 / this.DIST_SCALE < s1 && km <= Math.ceil(this.ROUTE_LEN * this.DIST_SCALE / 1000); km += 10) {
+      const sk = km * 1000 / this.DIST_SCALE, p = this.pos(sk, 10.7), at = this.at(sk), lay = this.kpLay || (this.kpLay = {}), l = lay[km] || (lay[km] = this.greenSign([String(km)], { bg: '#1d4f9c' }));
       const c = Math.cos(at.h), sn = Math.sin(at.h);
       g.det.box(p[0] - 0.04, p[1], p[2] - 0.04, p[0] + 0.04, p[1] + 1.3, p[2] + 0.04, { c: [0.8, 0.8, 0.8] });
       g.det.panel(p[0] - c * 0.25, p[2] + sn * 0.25, p[0] + c * 0.25, p[2] - sn * 0.25, p[1] + 1.3, p[1] + 1.8, 0.05, [-sn, 0, -at.h * 0 - Math.cos(at.h)], { c: [1, 1, 1], mat: 16, lay: l });
@@ -507,11 +818,20 @@ export class LongWorld {
   }
   // ---------- 休憩施設（SA・PA・道の駅） ----------
   facility(f) {
-    const at = this.at(f.s), ox = at.x, oz = at.z, h = at.h, y = f.y, season = this.season, R = rng(Math.floor(f.s));
+    const at = this.at(f.s), ox = at.x, oz = at.z, h = at.h + (f.side < 0 ? Math.PI : 0), y = f.y, season = this.season, R = rng(Math.floor(f.s));
     const W = this.W, toW = (lx, lz) => [ox + Math.cos(h) * lx + Math.sin(h) * lz, oz - Math.sin(h) * lx + Math.cos(h) * lz];
     const asph = { c: season === 'winter' ? [0.7, 0.72, 0.76] : [0.95, 0.95, 0.95], mat: 7, lay: L.ASPHALT }, white = { c: [1, 1, 1] }, snowy = season === 'winter';
     const sign = this.greenSign(f.type === 'MICHI' ? ['道の駅', f.name.replace('道の駅 ', '')] : [f.name], { bg: f.type === 'MICHI' ? '#2c6e2c' : '#0b6b3a' });
     const big = f.type === 'SA', michi = f.type === 'MICHI';
+    if (season === 'shutoko') {
+      // 箱崎PAは本線脇のビル3階。大規模な平面駐車場は作らず、短い進入部だけにする。
+      const base = toW(12.5, 8), deckY = y + 9, q = toW(12.5, 8);
+      f.entrance = toW(10.5, -8); f.exit = toW(10.5, 65); f.entranceYaw = h; f.exitYaw = h; f.B = [7, -4, 19, 38];
+      const wall = (a,b) => { const A=toW(...a),B=toW(...b); W.addWall(A[0],A[1],B[0],B[1],deckY-2,deckY+5); };
+      wall([7,-4],[19,-4]); wall([19,-4],[19,38]); wall([19,38],[7,38]); wall([7,38],[7,-4]);
+      this.add(f.s+12,g=>{g.s.setXf(ox,deckY,oz,h); g.s.box(7,0,-4,19,1.1,38,{c:[.38,.4,.42],lay:L.ASPHALT});g.s.box(7,-1,-4,19,0,38,{c:[.55,.57,.59]});g.s.box(7,1,-4,19,7,38,LM({c:[.62,.66,.68],side:{lay:L.OFFICE,tw:4,th:6}}));g.s.box(6.5,7,-4.5,19.5,7.8,38.5,{c:[.32,.37,.34]});g.s.box(6.5,2,3,6.7,6,30,{c:[.25,.52,.7]});g.s.box(19.1,2,3,19.3,6,30,{c:[.25,.52,.7]});g.s.box(8,8,0,18,8.4,34,{c:[.28,.46,.3]});g.s.panel(6.8,3,6.8,24,4.5,6.2,.04,[-1,0,0],{c:[1,1,1],mat:16,lay:sign});g.s.clearXf(); void base;void q;});
+      this.facFar(f, f.B, sign); return;
+    }
     // 当たり判定：敷地の外周の柵（減速車線・加速車線の外側を含む）と建物
     const wall = (a, b) => { const p = toW(...a), q = toW(...b); W.addWall(p[0], p[1], q[0], q[1], y - 2, y + 1.5); };
     wall([9.95, -170], [13.6, -60]); wall([13.6, -60], [13.6, -5]); wall([13.6, -5], [112, -5]); wall([112, -5], [112, 225]); wall([112, 225], [13.6, 225]); wall([13.6, 225], [13.6, 290]); wall([13.6, 290], [9.95, 420]);
@@ -601,7 +921,7 @@ export class LongWorld {
   farGB(s) { const p = this.at(s), ch = this.chunkAt(p.x, p.z); this.farL = this.farL || new Map(); let gb = this.farL.get(ch); if (!gb) this.farL.set(ch, gb = new GB()); return gb; }
   facFar(f, B, sign) {
     const at = this.at(f.s), gb = this.farGB(f.s + 100), y = f.y, se = this.season, big = f.type === 'SA', michi = f.type === 'MICHI', [x0, z0, x1, z1] = B, snow = { c: [0.97, 0.98, 1] };
-    gb.setXf(at.x, y, at.z, at.h);
+    gb.setXf(at.x, y, at.z, at.h + (f.side < 0 ? Math.PI : 0));
     if (big) { gb.box(x0, 0, z0, x1, 7.5, z1, LM({ c: [0.92, 0.9, 0.86], side: { lay: L.SHOP, tw: 6, th: 7.5 } })); gb.box(x0 - 3, 7.5, z0 - 2, x1 + 1, 8.1, z1 + 2, LM({ c: [0.35, 0.38, 0.42] })); gb.box(x0 - 0.05, 0.3, z0 + 4, x0, 6.5, z1 - 4, LM({ c: [0.55, 0.7, 0.85] }));
       gb.panel(x0 - 1, (z0 + z1) / 2 - 14, x0 - 1, (z0 + z1) / 2 + 14, 8.3, 11.8, 0.05, [-1, 0, 0], LM({ c: [1, 1, 1], mat: 16, lay: sign })); gb.box(x0 + 4, 0, z1 + 8, x1 - 6, 4.2, z1 + 22, LM({ c: [0.85, 0.82, 0.76] })); }
     else if (michi) { const wood = { c: [0.72, 0.52, 0.33], side: { lay: L.SHOP, tw: 5, th: 5 } };
@@ -618,21 +938,21 @@ export class LongWorld {
     gb.clearXf();
   }
   lbl(txt, bg = '#1c3d6e') { const c = this.lblCache || (this.lblCache = {}); const key = txt + bg; return c[key] || (c[key] = this.newDyn(ctx => { ctx.fillStyle = bg; ctx.fillRect(0, 0, 256, 256); ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.save(); ctx.scale(1, 4); let sz = 40; ctx.font = `800 ${sz}px ${FONT}`; const w = ctx.measureText(txt).width; if (w > 236) { sz *= 236 / w; ctx.font = `800 ${sz}px ${FONT}`; } ctx.fillText(txt, 128, 32); ctx.restore(); })); }
-  // 出発地：水瀬東IC（料金所風の門と案内標識）
+  // 出発地：入口案内と門型標識
   startArea() {
-    const s = -40, sg = this.greenSign(['水瀬東IC', '長距離ドライブ', '専用バイパス入口'], { scale: 0.85 }), sg2 = this.greenSign([this.D.dest, '400km'], { scale: 0.9 });
+    const s = -40, sg = this.greenSign([this.season === 'shutoko' ? '一之江入口' : '水瀬東IC', this.season === 'shutoko' ? '首都高速' : '長距離ドライブ', this.season === 'shutoko' ? '首都高速入口' : '専用バイパス入口'], { scale: 0.85 }), sg2 = this.greenSign([this.D.dest, `${Math.round(this.ROUTE_LEN * this.DIST_SCALE / 1000)}km`], { scale: 0.9 });
     this.add(s, g => { const L0 = this.pos(s, 10.5), R0 = this.pos(s, -10.5), at = this.at(s);
       for (const p of [L0, R0]) g.s.box(p[0] - 0.4, p[1], p[2] - 0.4, p[0] + 0.4, p[1] + 7, p[2] + 0.4, { c: [0.7, 0.72, 0.74] });
       g.s.beam([L0[0], L0[1] + 7, L0[2]], [R0[0], R0[1] + 7, R0[2]], 0.35, { c: [0.7, 0.72, 0.74] });
       const a = this.pos(s, 9, 0), b = this.pos(s, 1, 0); g.s.panel(a[0], a[2], b[0], b[2], a[1] + 7.3, a[1] + 11, 0.05, [-Math.sin(at.h), 0, -Math.cos(at.h)], { c: [1, 1, 1], mat: 16, lay: sg });
       const c = this.pos(s + 200, 9.6, 0), d = this.pos(s + 200, 13.6, 0), at2 = this.at(s + 200); g.s.box(d[0] - 0.1, d[1], d[2] - 0.1, d[0] + 0.1, d[1] + 5, d[2] + 0.1, { c: [0.6, 0.6, 0.6] }); g.s.panel(c[0], c[2], d[0], d[2], c[1] + 3, c[1] + 5.2, 0.05, [-Math.sin(at2.h), 0, -Math.cos(at2.h)], { c: [1, 1, 1], mat: 16, lay: sg2 });
-      // 料金所風の建屋（反対側）と旗
-      const t = this.pos(s - 30, -14); g.s.box(t[0] - 4, t[1], t[2] - 6, t[0] + 4, t[1] + 4, t[2] + 6, { c: [0.85, 0.85, 0.82], side: { lay: L.SHOP, tw: 4, th: 4 } });
+      // 一之江入口に本線料金所は設けない。入口案内と門型標識のみ。
+      if (this.season !== 'shutoko') { const t = this.pos(s - 30, -14); g.s.box(t[0] - 4, t[1], t[2] - 6, t[0] + 4, t[1] + 4, t[2] + 6, { c: [0.85, 0.85, 0.82], side: { lay: L.SHOP, tw: 4, th: 4 } }); }
     });
   }
   // 目的地：駐車場（クリア判定）と季節ごとの観光地
   destination() {
-    const s = ROUTE_LEN, at = this.at(s), y = this.endY, h = at.h, season = this.season, R = rng(99), W = this.W;
+    const s = this.direction === 'east' ? 0 : this.ROUTE_LEN, at = this.at(s), y = this.endY, h = at.h + (this.direction === 'east' ? Math.PI : 0), season = this.season, R = rng(99), W = this.W;
     const toW = (lx, lz) => [at.x + Math.cos(h) * lx + Math.sin(h) * lz, at.z - Math.sin(h) * lx + Math.cos(h) * lz];
     const wall = (a, b) => { const p = toW(...a), q = toW(...b); W.addWall(p[0], p[1], q[0], q[1], y - 2, y + 2); };
     wall([-10, 0], [-45, 10]); wall([-45, 10], [-45, 95]); wall([-45, 95], [45, 95]); wall([45, 95], [45, 10]); wall([45, 10], [10, 0]);
@@ -651,6 +971,7 @@ export class LongWorld {
   }
   // 目的地の観光地の建物（詳細モデルと遠景モデルで共通。遠景では g.det・g.glow も同じ GB に入れる）
   destLM(g, R) { const season = this.season;
+      if (season === 'shutoko') { g.s.box(-38,0,112,-15,18,138,{c:[0.62,0.66,0.68],side:{lay:L.OFFICE2,tw:6,th:18}}); g.s.box(16,0,118,42,12,145,{c:[0.72,0.7,0.66],side:{lay:L.OFFICE,tw:6,th:12}}); for(let x=-36;x<40;x+=4) g.s.box(x,1,112,x+1.2,2.1,112.08,{c:[0.36,0.48,0.52]}); return; }
       if (season === 'spring') { // 城郭公園と天守（石垣の上の三層の天守）
       g.s.box(-30, 0, 110, 30, 9, 170, { c: [0.62, 0.6, 0.55], lay: L.ROCK, side: { lay: L.ROCK, tw: 4, th: 3 } });
       let w2 = 22; for (let l = 0; l < 3; l++) { const y0 = 9 + l * 6.5; g.s.box(-w2 / 2, y0, 140 - w2 / 2 + 4, w2 / 2, y0 + 4.5, 140 + w2 / 2 - 4, { c: [0.97, 0.97, 0.95], side: { lay: L.OFFICE2, tw: 4, th: 4.5 } }); g.s.gable(-w2 / 2 - 2, 140 - w2 / 2 + 2, w2 / 2 + 2, 140 + w2 / 2 - 2, y0 + 4.5, 2.4, { c: [0.25, 0.3, 0.35], lay: L.KAWARA, tw: 2, gc: [0.97, 0.97, 0.95] }); w2 *= 0.75; }
@@ -670,14 +991,21 @@ export class LongWorld {
   // 本線の案内標識（目的地までの距離・休憩施設の予告）
   signs() {
     const D = this.D;
-    for (let km = 50; km < 400; km += 50) { const s = km * 1000 / DIST_SCALE + 30; if (this.fac.some(f => Math.abs(s - f.s) < 520)) continue; const lay = this.greenSign([D.dest, `${400 - km}km`]); this.gantry(s, lay); }
+    for (let km = 50; km < this.ROUTE_LEN * this.DIST_SCALE / 1000; km += 50) { const s = km * 1000 / this.DIST_SCALE + 30; if (this.fac.some(f => Math.abs(s - f.s) < 520)) continue; const lay = this.greenSign([D.dest, `${Math.round(this.ROUTE_LEN * this.DIST_SCALE / 1000 - km)}km`]); this.gantry(s, lay); }
     // 休憩施設の予告（表示15km手前＝実距離470m）
-    for (const f of this.fac) { const lay = this.greenSign([f.name, '15km'], { bg: f.type === 'MICHI' ? '#2c6e2c' : '#0b6b3a' }); this.gantry(f.s - 15000 / DIST_SCALE, lay); }
+    for (const f of this.fac) { const s = f.s - 15000 / this.DIST_SCALE; if (s < 0) continue; const lay = this.greenSign([f.name, '15km'], { bg: f.type === 'MICHI' ? '#2c6e2c' : '#0b6b3a' }); this.gantry(s, lay); }
     // 修正104：施設の予告を増やす（表示10km＝門型、表示5km＝左側の大きなポール標識。施設名と残り距離）
-    for (const f of this.fac) { const bg = f.type === 'MICHI' ? '#2c6e2c' : '#0b6b3a'; this.gantry(f.s - 10000 / DIST_SCALE, this.greenSign([f.name, '10km'], { bg }));
-      const l5 = this.greenSign([f.name, '5km ↗'], { bg }), s5 = f.s - 5000 / DIST_SCALE;
+    for (const f of this.fac) { const bg = f.type === 'MICHI' ? '#2c6e2c' : '#0b6b3a'; const s10 = f.s - 10000 / this.DIST_SCALE; if (s10 >= 0) this.gantry(s10, this.greenSign([f.name, '10km'], { bg }));
+      const l5 = this.greenSign([f.name, '5km ↗'], { bg }), s5 = f.s - 5000 / this.DIST_SCALE;
+      if (s5 < 0) continue;
       this.add(s5, g => { const p = this.pos(s5, 15), at = this.at(s5), a = this.pos(s5, 19.5), b = this.pos(s5, 10.5), n = [-Math.sin(at.h), 0, -Math.cos(at.h)];
         g.s.box(p[0] - 0.25, p[1] - 1, p[2] - 0.25, p[0] + 0.25, p[1] + 6, p[2] + 0.25, { c: [0.68, 0.7, 0.72] }); g.s.panel(a[0], a[2], b[0], b[2], p[1] + 5.6, p[1] + 9.6, 0.3, n, { c: [1, 1, 1], mat: 16, lay: l5 }); }); }
+    if (this.season === 'shutoko') for (const [s,lines] of [[2032,['小松川出入口','一之江']], [2615,['小松川JCT','C2 中央環状線']], [8571,['錦糸町出入口','6号向島線']], [12204,['両国JCT','6号向島線']], [14093,['箱崎JCT','箱崎PA']], [15255,['江戸橋JCT','都心環状線']], [16712,['京橋JCT','都心環状線']], [20195,['汐留JCT','都心環状線']], [21502,['浜崎橋JCT','1号羽田線']], [23170,['芝公園','東京タワー']], [26587,['谷町JCT','2号目黒線']], [29377,['高樹町','六本木']], [34142,['大橋JCT','C2 山手トンネル']], [39372,['西新宿JCT','4号新宿線']], [44818,['永福','高井戸']], [48671,['高井戸IC','中央道']], [54511,['調布IC','出口']]]) { for(const delta of [1017,436]) if(s-delta>0) this.gantry(s-delta,this.greenSign([...lines,`${Math.round(delta*this.DIST_SCALE/1000*10)/10}km`],{bg:'#006b3c',scale:.72})); }
+    if(this.season==='shutoko'){
+      const km=1000/this.DIST_SCALE;
+      for(const [s,lines] of [[15255,['C1 銀座・横浜']],[21502,['C1 目黒・渋谷']],[26587,['3 東名・渋谷']],[39372,['4 中央道・高井戸']]])this.gantry(s-150,this.greenSign(lines,{bg:'#006b3c',scale:.85}));
+      const left=this.greenSign(['C1 銀座','1 横浜'],{bg:'#006b3c',scale:.78}),right=this.greenSign(['JCT 200m','5 北池袋'],{bg:'#006b3c',scale:.78});this.gantry(15255-200*km,left);this.gantry(15255-200*km+12,right);
+    }
   }
   gantry(s, lay) {
     this.add(s, g => { const L0 = this.pos(s, 10.8), R0 = this.pos(s, 1.0), at = this.at(s), n = [-Math.sin(at.h), 0, -Math.cos(at.h)];
@@ -688,7 +1016,7 @@ export class LongWorld {
   // 遠景：周囲の山並み（季節の色）と、読み込み前のチャンク用の粗い地形
   farView() {
     const b = this.bb, cx = (b.x0 + b.x1) / 2, cz = (b.z0 + b.z1) / 2, rad = Math.max(b.x1 - b.x0, b.z1 - b.z0) / 2 + 1500, R = rng(7), M = this.W.mountains, season = this.season;
-    for (let k = 0; k < 90; k++) { const a = k / 90 * Math.PI * 2, d = rad + R() * 800, x = cx + Math.cos(a) * d, z = cz + Math.sin(a) * d, r = 500 + R() * 600, hgt = 250 + R() * 450;
+    for (let k = 0; k < (season === 'shutoko' ? 0 : 90); k++) { const a = k / 90 * Math.PI * 2, d = rad + R() * 800, x = cx + Math.cos(a) * d, z = cz + Math.sin(a) * d, r = 500 + R() * 600, hgt = 250 + R() * 450;
       const c = season === 'winter' ? [0.85, 0.88, 0.95] : season === 'autumn' ? [0.6 + R() * 0.15, 0.38, 0.25] : season === 'summer' ? [0.32, 0.5, 0.4] : [0.45, 0.58, 0.5];
       for (let s2 = 0; s2 < 6; s2++) { const a0 = s2 / 6 * Math.PI * 2, a1 = (s2 + 1) / 6 * Math.PI * 2; M.tri([x + Math.cos(a0) * r, -5, z + Math.sin(a0) * r], [x + Math.cos(a1) * r, -5, z + Math.sin(a1) * r], [x, hgt, z], { c, mat: 9 }, [0, 0], [0, 0], [0, 0], [x, hgt / 3, z]); }
       if (season === 'winter' || R() < 0.3) for (let s2 = 0; s2 < 6; s2++) { const a0 = s2 / 6 * Math.PI * 2, a1 = (s2 + 1) / 6 * Math.PI * 2, rr = r * 0.3; M.tri([x + Math.cos(a0) * rr, hgt * 0.7, z + Math.sin(a0) * rr], [x + Math.cos(a1) * rr, hgt * 0.7, z + Math.sin(a1) * rr], [x, hgt + 1, z], { c: [0.97, 0.98, 1], mat: 9 }, [0, 0], [0, 0], [0, 0], [x, hgt / 2, z]); }
@@ -698,9 +1026,9 @@ export class LongWorld {
       const p = [this.pos(s, u), this.pos(s, u + 125), this.pos(s + 125, u + 125), this.pos(s + 125, u)]; G.quadN([p[0][0], 0, p[0][2]], [p[1][0], 0, p[1][2]], [p[2][0], 0, p[2][2]], [p[3][0], 0, p[3][2]], [0, 1, 0], { c: [0.55, 0.78, 0.95], lay: L.WATER, mat: 21 }); } }
     // 読み込み前のチャンク用の粗い地形（50m刻み）
     this.farT = new Map();
-    for (let s = S_START; s < S_END; s += 50) { const ch = this.chunkAt(this.at(s + 25).x, this.at(s + 25).z); let gb = this.farT.get(ch); if (!gb) this.farT.set(ch, gb = new GB());
+    for (let s = S_START; s < this.ROUTE_LEN + 100; s += 50) { const ch = this.chunkAt(this.at(s + 25).x, this.at(s + 25).z); let gb = this.farT.get(ch); if (!gb) this.farT.set(ch, gb = new GB());
       for (const side of [1, -1]) { const us = [0, 40, 120, 260, 450]; for (let j = 0; j < us.length - 1; j++) { const P = (u, ss) => { const p = this.pos(ss, side * u); return [p[0], u < 11 ? this.roadY(ss) - 0.3 : this.terrainH(ss, side * u) - 0.3, p[2]]; };
-          const k = this.groundKind(s + 25, side * (us[j] + us[j + 1]) / 2), o = { c: us[j] === 0 ? [0.45, 0.45, 0.45] : this.groundCol(k), lay: us[j] === 0 ? L.ASPHALT : k === 'snow' ? L.WHITE : L.GRASS };
+          const k = this.groundKind(s + 25, side * (us[j] + us[j + 1]) / 2), o = { c: us[j] === 0 ? [0.45, 0.45, 0.45] : this.groundCol(k), lay: us[j] === 0 || k === 'cityground' ? L.ASPHALT : k === 'snow' ? L.WHITE : L.GRASS };
           const A = P(us[j], s), B = P(us[j + 1], s), C = P(us[j + 1], s + 50), Dd = P(us[j], s + 50);
           gb.tri(A, B, C, o, [0, 0], [0, 0], [0, 0], [A[0], A[1] - 100, A[2]]); gb.tri(A, C, Dd, o, [0, 0], [0, 0], [0, 0], [A[0], A[1] - 100, A[2]]); } } }
   }

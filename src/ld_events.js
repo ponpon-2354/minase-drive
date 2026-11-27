@@ -9,12 +9,11 @@
 //   修正118：セリフは性別×年齢帯の8区分（ld_lines.js）
 // 状態は LongDrive.st.ev に plain なJSONで持つ（セーブ・再開をまたいで続く。古いセーブには無いので既定値で補う）。天気の変化はセーブしない。
 // このモジュールは DOM・WebGL に触れない（字幕の表示は main.js が poll() の結果を出す）。
-import { ROUTE_LEN, DIST_SCALE } from './ld_world.js?v=0.9.3';
+import { ambienceSeason } from './ld_world.js?v=0.9.3';
 import { LINES, ECO_COMMENT, NAV, KIND_TRIG, RADIO, FOOD, CAT, mealFor, voiceKey, band } from './ld_lines.js?v=0.9.3';
 export { voiceKey, band, mealFor };
 
-const KM = DIST_SCALE / 1000; // 実距離1m → 表示km
-const kmToS = km => km / KM;   // 表示km → 実距離m
+const kmToS = (km, world) => km * 1000 / world.DIST_SCALE;   // 表示km → 実距離m
 const TALK_GAP = 90, TALK_GAP_HI = 35, SUB_GAP = 4, NAV_GAP = 6; // 秒（現実時間）
 const NAV_LEAD = [780, 470]; // ナビの観光案内を出す範囲：地物の 表示25km〜15km 手前（実 780〜470m）
 function hash(str) { let h = 2166136261; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
@@ -24,24 +23,27 @@ export const ageGroup = voiceKey;
 
 // ---- 見どころ（ナビの観光案内と同乗者の反応）：world.feats（実際に置いた地物）から作る ----
 export function spotsFor(world) {
-  const D = world.D, se = world.season, out = [];
+  const D = world.D, se = ambienceSeason(world.season), out = [];
   const feats = world.feats || [...D.bridges.map(([a, b, nm]) => ({ id: 'brg:' + nm, kind: 'bridge', name: nm, s0: a, s1: b, side: 0 })), ...D.tunnels.map(([a, b, nm]) => ({ id: 'tun:' + nm, kind: 'tunnel', name: nm, s0: a, s1: b, side: 0 }))];
   const sideT = sd => sd > 0 ? '左手に' : sd < 0 ? '右手に' : '';
   for (const f of feats) {
-    if (f.s0 > ROUTE_LEN + 20) continue;
+    if (f.s0 > world.ROUTE_LEN + 20) continue;
     const t = f.kind === 'dest' ? NAV.dest[se] : NAV[f.kind], trig = f.kind === 'dest' ? (se === 'spring' ? 'castle' : 'destView') : KIND_TRIG[f.kind] || null;
     const at = Math.max(f.s0, 40); // 出発地点から始まる地物は出発直後に
     out.push({ id: f.id, feat: f.id, kind: f.kind, s: at, s1: f.s1, nav: t ? t.replace('{name}', f.name).replace('{side}', sideT(f.side)) : null, trig, pri: f.kind === 'dest' ? 2 : ['sakuraT', 'lake', 'bridge', 'sea', 'onsen', 'mapleT'].includes(f.kind) ? 1 : 0 });
   }
-  for (const f of world.fac) out.push({ id: 'fac:' + f.id, feat: 'fac:' + f.id, kind: 'fac', fac: f, s: f.s - 140, s1: f.s, nav: NAV.fac[f.type].replace('{name}', f.name), trig: null, pri: 0 });
-  for (const f of world.fac) out.push({ id: 'facNear:' + f.id, kind: 'facNear', fac: f, s: f.s - kmToS(10), s1: f.s, nav: null, trig: 'facNear', pri: 0 });
-  out.push({ id: 'destNear', kind: 'destNear', s: ROUTE_LEN - kmToS(30), s1: ROUTE_LEN, nav: null, trig: 'destNear', pri: 2 });
+  for (const f of world.fac) out.push({ id: 'fac:' + f.id, feat: 'fac:' + f.id, kind: 'fac', fac: f, s: f.s - 140, s1: f.s, nav: NAV.fac[f.type] || NAV.fac[String(f.type).toUpperCase()], trig: null, pri: 0 });
+  for (const o of out) if (o.kind === 'fac' && o.nav) o.nav = o.nav.replace('{name}', o.fac.name);
+  for (const f of world.fac) out.push({ id: 'facNear:' + f.id, kind: 'facNear', fac: f, s: f.s - kmToS(10, world), s1: f.s, nav: null, trig: 'facNear', pri: 0 });
+  out.push({ id: 'destNear', kind: 'destNear', s: world.ROUTE_LEN - kmToS(30, world), s1: world.ROUTE_LEN, nav: null, trig: 'destNear', pri: 2 });
+  if (world.dir < 0) for (const o of out) { const a = world.ROUTE_LEN - o.s, b = world.ROUTE_LEN - o.s1; o.s = Math.min(a, b); o.s1 = Math.max(a, b); }
   return out.filter(o => isFinite(o.s)).sort((a, b) => a.s - b.s);
 }
 // ---- 天気の変化の予定（季節ごと。s は実距離。開始直後・施設の直前・目的地の直前は避ける） ----
 function weatherPlan(world, R) {
-  const se = world.season, avoid = s => world.fac.some(f => s > f.s - 500 && s < f.s + 520) || s > ROUTE_LEN - 900 || s < 600, out = [];
-  const pick = (a, b) => { for (let i = 0; i < 40; i++) { const s = kmToS(a) + R() * (kmToS(b) - kmToS(a)); if (!avoid(s)) return s; } return kmToS(a); };
+  const se = ambienceSeason(world.season), avoid = s => world.fac.some(f => s > f.s - 500 && s < f.s + 520) || s > world.ROUTE_LEN - 900 || s < 600, out = [];
+  const pick = (a, b) => { for (let i = 0; i < 40; i++) { const s = kmToS(a, world) + R() * (kmToS(b, world) - kmToS(a, world)); if (!avoid(s)) return s; } return kmToS(a, world); };
+  if (world.season === 'shutoko') { out.push({ type: 'shower', s: pick(12, 16) }, { type: 'cloud', s: pick(27, 31) }); return out.sort((a,b)=>a.s-b.s); }
   if (se === 'spring') { out.push({ type: 'shower', s: pick(120, 180) }); out.push({ type: 'cloud', s: pick(300, 330) }); }
   if (se === 'summer') { out.push({ type: 'cumulus', s: pick(60, 100) }); out.push({ type: 'shower', s: pick(230, 280) }); }
   if (se === 'autumn') { out.push({ type: 'cloud', s: pick(50, 80) }); out.push({ type: 'shower', s: pick(150, 190) }); }
@@ -52,7 +54,7 @@ const KID_FIRST = ['castle', 'tunnel', 'bridge', 'sea', 'rainbow', 'snowwall', '
 
 export class LDEvents {
   constructor({ world, season, party, st }) {
-    this.world = world; this.season = season; this.party = party || []; this.st = st; this.opts = { talk: true, nav: true, radio: true };
+    this.world = world; this.season = ambienceSeason(season); this.party = party || []; this.st = st; this.opts = { talk: true, nav: true, radio: true };
     const ev = st.ev = st.ev && typeof st.ev === 'object' ? st.ev : {};
     // 既定値で補う（古いセーブ互換）
     for (const [k, v] of Object.entries({ used: [], radio: [], nav: [], spots: [], req: null, reqN: 0, fatT: -1, eco: null, trk: 0, seed: hash(String(st.startAt || 1) + season) })) if (ev[k] == null || (Array.isArray(v) && !Array.isArray(ev[k])) || (typeof v === 'number' && typeof ev[k] !== 'number')) ev[k] = v; // 型の違う古い値も既定値に
@@ -64,7 +66,7 @@ export class LDEvents {
     this.clock = 0; this.lastTalk = -TALK_GAP + 25; this.subUntil = -SUB_GAP; this.queue = []; this.navQ = []; this.radioQ = []; this.log = [];
     // 天気（セーブしない）：通り過ぎた区間の予定は済みにする
     this.base = world.D.weather || 'clear'; this.wx = { cur: this.base, fx: { rainbow: 0, cumulus: 0, sunbeam: 0 }, ev: null, log: [] };
-    const s0 = st.maxS || 0; this.plan = weatherPlan(world, seeded(ev.seed + 7)).filter(p => p.s > s0 + 50);
+    const s0 = st.maxS || 0; this.plan = weatherPlan(world, seeded(ev.seed + 7)).map(p => world.dir < 0 ? { ...p, s: world.ROUTE_LEN - p.s } : p).filter(p => p.s > s0 + 50);
     this.f = { acc: 0, v: null, accRun: 0, brkRun: 0, flips: [], sgn: 0, weaveCd: 0 };
     this.s = s0;
   }
@@ -146,14 +148,14 @@ export class LDEvents {
   askStep(dt, s) {
     const ev = this.ev, req = ev.req;
     if ((!req || req.state !== 'asked') && ev.reqN < 2 && this.pass.length && this.clock > 50 && this.opts.talk) {
-      const nf = this.world.fac.find(q => q.s > s + 650 && q.s < s + 2600 && !(this.st.restedIds || []).includes(q.id));
+      const nf = this.world.fac.find(q => (this.world.dir < 0 ? this.world.ROUTE_LEN - q.s : q.s) > s + 650 && (this.world.dir < 0 ? this.world.ROUTE_LEN - q.s : q.s) < s + 2600 && !(this.st.restedIds || []).includes(q.id));
       if (nf && this.R() < dt * 0.05 && !this.queue.length && this.clock - this.lastTalk > TALK_GAP_HI) {
         const kid = this.pass.find(q => q.ch.age === 'child'), p = kid && this.R() < 0.6 ? kid : this.pass[Math.floor(this.R() * this.pass.length)], it = this.pickFood(p);
         const l = it ? this.line('ask', { fac: nf.name, item: it }, p) : this.line('askNF', { fac: nf.name }, p);
         if (l) { l.hi = true; this.queue.push(l); this.lastTalk = this.clock; ev.req = { fac: nf.id, item: it, who: this.pass.indexOf(p), state: 'asked' }; ev.reqN++; if (it) ev.ctx.asked.push(it); }
       }
     }
-    if (req && req.state === 'asked') { const fc = this.world.fac.find(q => q.id === req.fac); if (fc && s > fc.s + 470) { req.state = 'missed'; this.say('askMiss', { fac: fc.name, item: req.item }, true, this.pass[req.who]); } }
+    if (req && req.state === 'asked') { const fc = this.world.fac.find(q => q.id === req.fac); if (fc && s > (this.world.dir < 0 ? this.world.ROUTE_LEN - fc.s : fc.s) + 470) { req.state = 'missed'; this.say('askMiss', { fac: fc.name, item: req.item }, true, this.pass[req.who]); } }
   }
   // 休憩の開始（longdrive.startRest）。お願いの施設なら、その品をムービーの食事に加える。戻り値＝ムービーで食べるもの（cutscene と共用）
   restStart(fac) {
@@ -180,7 +182,8 @@ export class LDEvents {
     if (F.v == null) F.v = kmh; const a = (kmh - F.v) / 3.6 / Math.max(dt, 1e-3); F.v = kmh; F.acc += (a - F.acc) * (1 - Math.exp(-dt / 0.25)); const acc = f.acc != null ? f.acc : F.acc;
     E.t += dt; E.maxKmh = Math.max(E.maxKmh, kmh);
     if (f.cruise) E.cruiseT += dt;
-    if (main && kmh >= 70 && kmh <= 100) E.bandT += dt;
+    const inBand = this.world.season === 'shutoko' ? kmh >= 45 && kmh <= 65 : kmh >= 70 && kmh <= 100;
+    if (main && inBand) E.bandT += dt;
     // 急加速：加速度2.0m/s²超、またはアクセル全開で1.0m/s²超が0.6秒続いたら1回
     if (acc > 2.0 || (f.thr >= 0.95 && acc > 1.0 && kmh > 20)) { F.accRun += dt; if (F.accRun >= 0.6 && !F.accHit) { E.acc++; F.accHit = true; } } else { F.accRun = 0; F.accHit = false; }
     // 急ブレーキ：減速度3.5m/s²超が0.5秒続いたら1回（軽く踏んで速度を合わせるのは数えない）
@@ -197,7 +200,7 @@ export class LDEvents {
     const it = (label, pts, detail) => { items.push({ label, pts: Math.round(pts), detail }); return Math.round(pts); };
     let sc = 90;
     sc += it('速度キープの活用', Math.min(10, cruise / 0.5 * 10), `走行時間の${Math.round(cruise * 100)}%`);
-    sc += it('推奨速度帯（70〜100km/h）', band >= 0.85 ? 0 : -Math.min(30, (0.85 - band) * 45), `本線走行の${Math.round(band * 100)}%`);
+    sc += it(this.world.season === 'shutoko' ? '推奨速度帯（45〜65km/h）' : '推奨速度帯（70〜100km/h）', band >= 0.85 ? 0 : -Math.min(30, (0.85 - band) * 45), `本線走行の${Math.round(band * 100)}%`);
     sc += it('急加速', -Math.min(20, E.acc * 4), `${E.acc}回`);
     sc += it('急ブレーキ', -Math.min(25, E.brk * 5), `${E.brk}回`);
     sc += it('蛇行', -Math.min(15, E.weave * 3), `${E.weave}回`);
